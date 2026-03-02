@@ -1,0 +1,16 @@
+python SGM.py \
+--left_image  "./img/12 39 4338_727_L.bmp" \
+--right_image  "./img/12 39 4338_727_R.bmp" \
+--output_path "./img/" \
+--disparity_range 128 \
+--Grad 32 \
+--Ctg 16 \
+--Window_Size 3 \
+--LARGE_PENALTY 1.0 \
+--SMALL_PENALTY 0.3 \
+--filling filling \
+--downsample Flase \
+--height_new 240 \
+--width_new 640 \
+--cut_height 0 \
+--cut_width 0

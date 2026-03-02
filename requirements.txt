@@ -1,0 +1,26 @@
+# =============================================================================
+# SGM-ViT: Requirements
+# Python >= 3.9 recommended
+# =============================================================================
+
+# Core deep learning framework
+torch>=2.0.0
+torchvision>=0.15.0
+
+# Scientific computing
+numpy>=1.24.0
+
+# Computer vision utilities
+opencv-python>=4.7.0
+
+# Visualization
+matplotlib>=3.7.0
+
+# Progress bars
+tqdm>=4.65.0
+
+# Tensor manipulation utilities (used in ViT / attention operations)
+einops>=0.6.1
+
+# FLOPs / parameter counting for model analysis
+thop>=0.1.1
