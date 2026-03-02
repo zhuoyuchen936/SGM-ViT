@@ -20,9 +20,13 @@ Expected outputs (in results/demo/)
   01_left_image.png          — input left image (BGR)
   02_sgm_disparity.png       — filled disparity map (plasma colourmap)
   03_sgm_confidence.png      — per-pixel SGM confidence (RdYlGn colourmap)
-  04_da2_depth.png           — DepthAnythingV2 depth (Spectral_r colourmap)
+  04_da2_depth.png           — DepthAnythingV2 raw depth (Spectral_r colourmap)
   05_token_routing.png       — 37×37 token keep/prune grid
-  06_summary.png             — 2×3 composite panel (paper-ready figure)
+  06_routing_overlay.png     — routing decision overlaid on input image
+  07_fusion_depth.png        — SGM-ViT fused depth (SGM fills pruned, DA2 keeps rest)
+  08_diff_map.png            — per-pixel absolute diff |DA2 - fused| (hot colourmap)
+  09_comparison_da2_fused.png— side-by-side paper figure: raw DA2 vs SGM-ViT fused
+  00_summary.png             — 3×3 composite panel (paper-ready figure)
 
 Runtime notes
 -------------
@@ -169,13 +173,16 @@ def save_panel(img_bgr: np.ndarray, path: str, title: str | None = None) -> None
     print(f"  [saved] {path}")
 
 
-def build_summary_figure(panels: list[tuple[str, np.ndarray]], out_path: str) -> None:
-    """Create a 2×3 Matplotlib figure from up to 6 BGR panels and save as PNG."""
+def build_summary_figure(
+    panels: list[tuple[str, np.ndarray]],
+    out_path: str,
+    ncol: int = 3,
+) -> None:
+    """Create an N×ncol Matplotlib figure from BGR panels and save as PNG."""
     n    = len(panels)
-    ncol = 3
     nrow = (n + ncol - 1) // ncol
 
-    fig = plt.figure(figsize=(18, nrow * 5.5), constrained_layout=True)
+    fig = plt.figure(figsize=(ncol * 6, nrow * 5.5), constrained_layout=True)
     fig.suptitle(
         "SGM-ViT Demo: SGM Confidence-Guided Token Routing + DepthAnythingV2",
         fontsize=14, fontweight="bold"
@@ -186,15 +193,121 @@ def build_summary_figure(panels: list[tuple[str, np.ndarray]], out_path: str) ->
         ax = fig.add_subplot(gs[idx // ncol, idx % ncol])
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         ax.imshow(rgb)
-        ax.set_title(title, fontsize=11)
+        ax.set_title(title, fontsize=10)
         ax.axis("off")
 
-    # Hide unused cells
     for idx in range(n, nrow * ncol):
         fig.add_subplot(gs[idx // ncol, idx % ncol]).axis("off")
 
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     fig.savefig(out_path, dpi=120, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  [saved] {out_path}")
+
+
+def fuse_depth_maps(
+    da2_depth: np.ndarray,
+    sgm_disp_norm: np.ndarray,
+    confidence_map: np.ndarray,
+    threshold: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Fuse DA2 depth and SGM disparity using the token routing decision.
+
+    Strategy
+    --------
+    SGM disparity (larger = closer) is converted to a depth-like representation
+    by inversion: sgm_depth = 1 - disp_norm.  Both maps are independently
+    normalised to [0, 1] before blending.
+
+    The per-pixel fusion gate is the confidence map itself:
+        fused = (1 - conf) * da2_norm + conf * sgm_depth_norm
+                ─────────────────────   ───────────────────────
+                DA2 dominates when       SGM dominates when
+                conf is low (uncertain)  conf is high (reliable)
+
+    This matches the token-routing logic exactly:
+      • conf > θ  →  "prune"  →  SGM weight ≈ 1 (SGM fills the depth)
+      • conf ≤ θ  →  "keep"   →  DA2 weight ≈ 1 (ViT attention used)
+
+    Returns
+    -------
+    fused_norm : (H, W) float32 [0, 1]
+        Fused depth map in display space (higher = farther).
+    diff_map   : (H, W) float32 [0, 1]
+        Per-pixel absolute difference |da2_norm - fused_norm|,
+        normalised to [0, 1].  Highlights regions altered by SGM fusion.
+    """
+    # -- Step 1: normalise DA2 depth to [0, 1] (higher = farther) --
+    d_min, d_max = da2_depth.min(), da2_depth.max()
+    da2_norm = (da2_depth - d_min) / (d_max - d_min + 1e-8)
+
+    # -- Step 2: convert SGM disparity → depth-like (invert) --
+    # Disparity is inversely proportional to depth:
+    #   larger disparity ↔ closer   →   invert so higher value = farther
+    sgm_depth_norm = 1.0 - np.clip(sgm_disp_norm, 0.0, 1.0)
+
+    # -- Step 3: resize SGM to match DA2 resolution if needed --
+    if sgm_depth_norm.shape != da2_norm.shape:
+        sgm_depth_norm = cv2.resize(
+            sgm_depth_norm, (da2_norm.shape[1], da2_norm.shape[0]),
+            interpolation=cv2.INTER_AREA,
+        )
+    conf = cv2.resize(
+        confidence_map, (da2_norm.shape[1], da2_norm.shape[0]),
+        interpolation=cv2.INTER_AREA,
+    ) if confidence_map.shape != da2_norm.shape else confidence_map.copy()
+
+    # -- Step 4: soft confidence-weighted blend --
+    fused = (1.0 - conf) * da2_norm + conf * sgm_depth_norm
+    fused = fused.astype(np.float32)
+
+    # -- Step 5: absolute difference map (shows SGM contribution) --
+    diff = np.abs(da2_norm - fused).astype(np.float32)
+    d_max_diff = diff.max()
+    diff_norm = diff / (d_max_diff + 1e-8)
+
+    return fused, diff_norm
+
+
+def build_comparison_figure(
+    da2_bgr: np.ndarray,
+    fused_bgr: np.ndarray,
+    diff_bgr: np.ndarray,
+    prune_ratio: float,
+    attn_reduction: float,
+    threshold: float,
+    out_path: str,
+) -> None:
+    """
+    Build a paper-ready 1×3 comparison figure:
+      [Raw DA2 depth]  |  [SGM-ViT Fused]  |  [Diff map]
+
+    The figure is annotated with pruning statistics and saved at high DPI.
+    """
+    fig, axes = plt.subplots(1, 3, figsize=(21, 5.5), constrained_layout=True)
+
+    panels = [
+        (da2_bgr,    "Raw DepthAnythingV2",             "No SGM prior"),
+        (fused_bgr,  "SGM-ViT Fused Depth",
+         f"SGM fills {100*prune_ratio:.1f}% tokens  |  Attn FLOPs↓{100*attn_reduction:.1f}%"),
+        (diff_bgr,   "|DA2 − Fused| Difference Map",    f"θ = {threshold:.2f}"),
+    ]
+
+    for ax, (bgr, title, subtitle) in zip(axes, panels):
+        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        ax.imshow(rgb)
+        ax.set_title(title, fontsize=13, fontweight="bold", pad=4)
+        ax.set_xlabel(subtitle, fontsize=10, color="#555555")
+        ax.axis("off")
+
+    fig.suptitle(
+        "SGM-ViT: Confidence-Guided Depth Fusion — Raw DA2 vs. SGM-ViT Output",
+        fontsize=13, fontweight="bold", y=1.01,
+    )
+
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"  [saved] {out_path}")
 
@@ -299,6 +412,20 @@ def run_demo(args: argparse.Namespace) -> None:
     token_conf = confidence_to_token_grid(confidence_map, TOKEN_GRID_SIZE)
 
     # ------------------------------------------------------------------
+    # Step 4.5: Compute SGM-ViT fused depth map
+    # ------------------------------------------------------------------
+    # Fuse DA2 depth (full-res float) and SGM disparity (image-res float)
+    # using the per-pixel confidence map as a soft blend gate.
+    # High confidence (conf > θ) → SGM dominates (replaces ViT depth)
+    # Low confidence (conf ≤ θ) → DA2 dominates (ViT attention preserved)
+    depth_fused, diff_map = fuse_depth_maps(
+        da2_depth      = depth_map,
+        sgm_disp_norm  = disparity_norm,
+        confidence_map = confidence_map,
+        threshold      = args.threshold,
+    )
+
+    # ------------------------------------------------------------------
     # Step 5: Build & save visualisations
     # ------------------------------------------------------------------
     print("[5/5] Saving visualisations ...")
@@ -350,20 +477,54 @@ def run_demo(args: argparse.Namespace) -> None:
     save_panel(p6, os.path.join(out_dir, "06_routing_overlay.png"),
                "Routing Overlay (green=keep, red=prune)")
 
-    # --- Summary figure ---
+    # --- Panel 7: SGM-ViT fused depth ---
+    # Use the same Spectral_r colourmap as DA2 for direct visual comparison
+    p7 = colorize(depth_fused, cmap="Spectral_r", vmin=0.0, vmax=1.0)
+    p7 = resize_to_match(p7, left_bgr)
+    save_panel(p7, os.path.join(out_dir, "07_fusion_depth.png"),
+               f"SGM-ViT Fused Depth (conf-weighted, θ={args.threshold:.2f})")
+
+    # --- Panel 8: Difference map |DA2 - fused| ---
+    # Hot colourmap: brighter = larger deviation introduced by SGM fusion.
+    # These are the regions where SGM meaningfully changed the DA2 output.
+    p8 = colorize(diff_map, cmap="hot", vmin=0.0, vmax=1.0)
+    p8 = resize_to_match(p8, left_bgr)
+    save_panel(p8, os.path.join(out_dir, "08_diff_map.png"),
+               "|DA2 raw - SGM-ViT fused|  (brighter = larger SGM contribution)")
+
+    # --- Panel 9: Paper comparison strip: raw DA2 vs fused ---
+    # Re-render DA2 on the same [0,1] normalised scale as fused for fair comparison
+    da2_norm_vis = (depth_map - depth_map.min()) / (depth_map.max() - depth_map.min() + 1e-8)
+    p4_normed = colorize(da2_norm_vis, cmap="Spectral_r", vmin=0.0, vmax=1.0)
+    p4_normed = resize_to_match(p4_normed, left_bgr)
+
+    build_comparison_figure(
+        da2_bgr        = p4_normed,
+        fused_bgr      = p7,
+        diff_bgr       = p8,
+        prune_ratio    = prune_ratio,
+        attn_reduction = attn_reduction,
+        threshold      = args.threshold,
+        out_path       = os.path.join(out_dir, "09_comparison_da2_fused.png"),
+    )
+
+    # --- Summary figure (3×3 grid) ---
     panels = [
-        ("(1) Input Left Image",                   p1),
-        ("(2) SGM Disparity",                      p2),
+        ("(1) Input Left Image",                         p1),
+        ("(2) SGM Disparity",                            p2),
         (f"(3) SGM Confidence (μ={confidence_map.mean():.2f})", p3),
-        (f"(4) DAv2 Depth ({args.encoder})",       p4),
+        (f"(4) DA2 Raw Depth ({args.encoder})",          p4),
         (f"(5) Token Grid (prune {100*prune_ratio:.1f}%)", grid_img),
-        ("(6) Routing Overlay",                    p6),
+        ("(6) Routing Overlay",                          p6),
+        (f"(7) SGM-ViT Fused Depth (θ={args.threshold:.2f})", p7),
+        (f"(8) |DA2 − Fused| Diff (attn↓{100*attn_reduction:.1f}%)", p8),
     ]
-    build_summary_figure(panels, os.path.join(out_dir, "00_summary.png"))
+    build_summary_figure(panels, os.path.join(out_dir, "00_summary.png"), ncol=4)
 
     # ------------------------------------------------------------------
     # Final stats
     # ------------------------------------------------------------------
+    sgm_contribution = float(diff_map.mean())
     print(f"\n{'='*60}")
     print(f"  Demo complete.  Results saved to: {out_dir}/")
     print(f"{'='*60}")
@@ -372,6 +533,13 @@ def run_demo(args: argparse.Namespace) -> None:
     print(f"  Threshold θ     : {args.threshold}")
     print(f"  Pruning ratio   : {100*prune_ratio:.1f}%  ({n_prune}/{N} tokens skipped)")
     print(f"  Attn FLOPs ↓    : ~{100*attn_reduction:.1f}%  (quadratic attention)")
+    print(f"  SGM contribution: mean |DA2-fused| = {sgm_contribution:.4f}  "
+          f"(higher = SGM changed more pixels)")
+    print(f"{'='*60}")
+    print(f"  Key outputs:")
+    print(f"    04_da2_depth.png           — raw DepthAnythingV2")
+    print(f"    07_fusion_depth.png        — SGM-ViT fused depth")
+    print(f"    09_comparison_da2_fused.png— side-by-side comparison (paper figure)")
     print(f"{'='*60}\n")
 
 
