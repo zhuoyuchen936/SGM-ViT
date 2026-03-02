@@ -49,6 +49,7 @@ matplotlib.use("Agg")                          # headless backend — no GUI nee
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import torch
+import torch.nn.functional as F
 
 # ---------------------------------------------------------------------------
 # Path setup — run from project root or any location
@@ -205,74 +206,77 @@ def build_summary_figure(
     print(f"  [saved] {out_path}")
 
 
-def fuse_depth_maps(
-    da2_depth: np.ndarray,
-    sgm_disp_norm: np.ndarray,
-    confidence_map: np.ndarray,
-    threshold: float,
-) -> tuple[np.ndarray, np.ndarray]:
+def run_sparse_da2(
+    model: DepthAnythingV2,
+    image_bgr: np.ndarray,
+    prune_mask: torch.Tensor,
+    input_size: int = 518,
+) -> np.ndarray:
     """
-    Fuse DA2 depth and SGM disparity using the token routing decision.
+    Run DepthAnythingV2 with SGM-pruned token positions zeroed before attention.
 
-    Strategy
-    --------
-    SGM disparity (larger = closer) is converted to a depth-like representation
-    by inversion: sgm_depth = 1 - disp_norm.  Both maps are independently
-    normalised to [0, 1] before blending.
+    Mechanism
+    ---------
+    A ``register_forward_pre_hook`` is attached to the first transformer block.
+    It fires after ``prepare_tokens_with_masks`` has produced the full sequence
+    [CLS | register_tokens | patch_tokens] and before any attention computation.
+    Pruned spatial-token positions are multiplied by zero so their key / query /
+    value contributions in all subsequent attention layers are suppressed —
+    without modifying any model weights.
 
-    The per-pixel fusion gate is the confidence map itself:
-        fused = (1 - conf) * da2_norm + conf * sgm_depth_norm
-                ─────────────────────   ───────────────────────
-                DA2 dominates when       SGM dominates when
-                conf is low (uncertain)  conf is high (reliable)
+    Token layout (DINOv2):
+        index 0              : CLS token
+        1 … nr               : register tokens  (nr = num_register_tokens)
+        1+nr … 1+nr+N−1      : spatial patch tokens  (N = grid²)
 
-    This matches the token-routing logic exactly:
-      • conf > θ  →  "prune"  →  SGM weight ≈ 1 (SGM fills the depth)
-      • conf ≤ θ  →  "keep"   →  DA2 weight ≈ 1 (ViT attention used)
+    This directly models the hardware path: pruned tokens are never dispatched
+    to the attention PE array; only the keep stream is processed.
+
+    Parameters
+    ----------
+    model       : DepthAnythingV2 (eval mode, on target device)
+    image_bgr   : (H, W, 3) uint8 BGR array (from cv2.imread)
+    prune_mask  : (N,) bool CPU tensor — True = token is pruned (zeroed)
+    input_size  : int
 
     Returns
     -------
-    fused_norm : (H, W) float32 [0, 1]
-        Fused depth map in display space (higher = farther).
-    diff_map   : (H, W) float32 [0, 1]
-        Per-pixel absolute difference |da2_norm - fused_norm|,
-        normalised to [0, 1].  Highlights regions altered by SGM fusion.
+    depth : (H_orig, W_orig) float32
     """
-    # -- Step 1: normalise DA2 depth to [0, 1] (higher = farther) --
-    d_min, d_max = da2_depth.min(), da2_depth.max()
-    da2_norm = (da2_depth - d_min) / (d_max - d_min + 1e-8)
+    image_tensor, (h, w) = model.image2tensor(image_bgr, input_size)
 
-    # -- Step 2: convert SGM disparity → depth-like (invert) --
-    # Disparity is inversely proportional to depth:
-    #   larger disparity ↔ closer   →   invert so higher value = farther
-    sgm_depth_norm = 1.0 - np.clip(sgm_disp_norm, 0.0, 1.0)
+    nr           = getattr(model.pretrained, 'num_register_tokens', 0)
+    N            = prune_mask.shape[0]
+    # Multiplicative gate: 0 for pruned tokens, 1 for kept tokens
+    keep_weight  = (~prune_mask).float().unsqueeze(0).unsqueeze(-1)  # (1, N, 1)
 
-    # -- Step 3: resize SGM to match DA2 resolution if needed --
-    if sgm_depth_norm.shape != da2_norm.shape:
-        sgm_depth_norm = cv2.resize(
-            sgm_depth_norm, (da2_norm.shape[1], da2_norm.shape[0]),
-            interpolation=cv2.INTER_AREA,
-        )
-    conf = cv2.resize(
-        confidence_map, (da2_norm.shape[1], da2_norm.shape[0]),
-        interpolation=cv2.INTER_AREA,
-    ) if confidence_map.shape != da2_norm.shape else confidence_map.copy()
+    def _pre_hook(module, args):
+        x = args[0].clone()                          # (B, 1+nr+N, D)
+        x[:, 1 + nr : 1 + nr + N, :] *= keep_weight.to(x.device)
+        return (x,) + args[1:]
 
-    # -- Step 4: soft confidence-weighted blend --
-    fused = (1.0 - conf) * da2_norm + conf * sgm_depth_norm
-    fused = fused.astype(np.float32)
+    # Handle both chunked (parallel training) and non-chunked inference
+    if getattr(model.pretrained, 'chunked_blocks', False):
+        first_block = model.pretrained.blocks[0][0]
+    else:
+        first_block = model.pretrained.blocks[0]
 
-    # -- Step 5: absolute difference map (shows SGM contribution) --
-    diff = np.abs(da2_norm - fused).astype(np.float32)
-    d_max_diff = diff.max()
-    diff_norm = diff / (d_max_diff + 1e-8)
-
-    return fused, diff_norm
+    handle = first_block.register_forward_pre_hook(_pre_hook)
+    try:
+        with torch.no_grad():
+            depth_tensor = model.forward(image_tensor)           # (B, H', W')
+            depth = F.interpolate(
+                depth_tensor[:, None], (h, w),
+                mode="bilinear", align_corners=True,
+            )[0, 0]
+        return depth.cpu().numpy()
+    finally:
+        handle.remove()
 
 
 def build_comparison_figure(
     da2_bgr: np.ndarray,
-    fused_bgr: np.ndarray,
+    sparse_bgr: np.ndarray,
     diff_bgr: np.ndarray,
     prune_ratio: float,
     attn_reduction: float,
@@ -281,17 +285,19 @@ def build_comparison_figure(
 ) -> None:
     """
     Build a paper-ready 1×3 comparison figure:
-      [Raw DA2 depth]  |  [SGM-ViT Fused]  |  [Diff map]
+      [Dense DA2 (baseline)]  |  [Sparse DA2 (SGM-ViT)]  |  [|Dense − Sparse|]
 
     The figure is annotated with pruning statistics and saved at high DPI.
     """
     fig, axes = plt.subplots(1, 3, figsize=(21, 5.5), constrained_layout=True)
 
     panels = [
-        (da2_bgr,    "Raw DepthAnythingV2",             "No SGM prior"),
-        (fused_bgr,  "SGM-ViT Fused Depth",
-         f"SGM fills {100*prune_ratio:.1f}% tokens  |  Attn FLOPs↓{100*attn_reduction:.1f}%"),
-        (diff_bgr,   "|DA2 − Fused| Difference Map",    f"θ = {threshold:.2f}"),
+        (da2_bgr,    "Dense DA2 (Baseline)",
+         "All tokens attend — no pruning"),
+        (sparse_bgr, "Sparse DA2 (SGM-ViT)",
+         f"{100*prune_ratio:.1f}% tokens pruned  |  Attn FLOPs↓{100*attn_reduction:.1f}%  |  θ={threshold:.2f}"),
+        (diff_bgr,   "|Dense − Sparse| Difference",
+         "Brighter = larger prediction change from pruning"),
     ]
 
     for ax, (bgr, title, subtitle) in zip(axes, panels):
@@ -302,7 +308,7 @@ def build_comparison_figure(
         ax.axis("off")
 
     fig.suptitle(
-        "SGM-ViT: Confidence-Guided Depth Fusion — Raw DA2 vs. SGM-ViT Output",
+        "SGM-ViT: Dense DA2 vs. Sparse DA2 with SGM Confidence-Guided Token Pruning",
         fontsize=13, fontweight="bold", y=1.01,
     )
 
@@ -412,18 +418,31 @@ def run_demo(args: argparse.Namespace) -> None:
     token_conf = confidence_to_token_grid(confidence_map, TOKEN_GRID_SIZE)
 
     # ------------------------------------------------------------------
-    # Step 4.5: Compute SGM-ViT fused depth map
+    # Step 4.5: Sparse DA2 inference (pruned tokens zeroed via hook)
     # ------------------------------------------------------------------
-    # Fuse DA2 depth (full-res float) and SGM disparity (image-res float)
-    # using the per-pixel confidence map as a soft blend gate.
-    # High confidence (conf > θ) → SGM dominates (replaces ViT depth)
-    # Low confidence (conf ≤ θ) → DA2 dominates (ViT attention preserved)
-    depth_fused, diff_map = fuse_depth_maps(
-        da2_depth      = depth_map,
-        sgm_disp_norm  = disparity_norm,
-        confidence_map = confidence_map,
-        threshold      = args.threshold,
+    # Build a boolean prune mask from the routing result, then re-run DA2
+    # with those tokens zeroed at the input of blocks[0].  The network
+    # processes a token sequence where high-confidence patch positions
+    # contribute zero activations to every attention layer — equivalent to
+    # skipping their dispatch to the attention PE array in hardware.
+    prune_mask_1d = torch.zeros(N, dtype=torch.bool)
+    prune_mask_1d[routing["prune_idx"][0]] = True
+
+    print(f"[4.5/5] Sparse DA2 inference ({n_prune} tokens zeroed) ...")
+    t_sparse = time.perf_counter()
+    depth_sparse = run_sparse_da2(
+        model       = model,
+        image_bgr   = left_bgr,
+        prune_mask  = prune_mask_1d,
+        input_size  = 518,
     )
+    print(f"      Sparse inference time: {time.perf_counter()-t_sparse:.2f}s\n")
+
+    # Per-pixel absolute difference between dense and sparse outputs
+    # (normalise both to the same [0,1] range for a fair comparison)
+    dense_norm  = (depth_map    - depth_map.min())    / (depth_map.max()    - depth_map.min()    + 1e-8)
+    sparse_norm = (depth_sparse - depth_sparse.min()) / (depth_sparse.max() - depth_sparse.min() + 1e-8)
+    diff_map    = np.abs(dense_norm - sparse_norm).astype(np.float32)
 
     # ------------------------------------------------------------------
     # Step 5: Build & save visualisations
@@ -477,69 +496,69 @@ def run_demo(args: argparse.Namespace) -> None:
     save_panel(p6, os.path.join(out_dir, "06_routing_overlay.png"),
                "Routing Overlay (green=keep, red=prune)")
 
-    # --- Panel 7: SGM-ViT fused depth ---
-    # Use the same Spectral_r colourmap as DA2 for direct visual comparison
-    p7 = colorize(depth_fused, cmap="Spectral_r", vmin=0.0, vmax=1.0)
+    # --- Panel 7: Sparse DA2 depth (SGM-ViT output) ---
+    # Same Spectral_r colourmap and [0,1] range as the dense baseline
+    # so the two are directly comparable pixel-for-pixel.
+    p7 = colorize(sparse_norm, cmap="Spectral_r", vmin=0.0, vmax=1.0)
     p7 = resize_to_match(p7, left_bgr)
-    save_panel(p7, os.path.join(out_dir, "07_fusion_depth.png"),
-               f"SGM-ViT Fused Depth (conf-weighted, θ={args.threshold:.2f})")
+    save_panel(p7, os.path.join(out_dir, "07_sparse_da2_depth.png"),
+               f"Sparse DA2 — SGM-ViT ({100*prune_ratio:.1f}% pruned, θ={args.threshold:.2f})")
 
-    # --- Panel 8: Difference map |DA2 - fused| ---
-    # Hot colourmap: brighter = larger deviation introduced by SGM fusion.
-    # These are the regions where SGM meaningfully changed the DA2 output.
-    p8 = colorize(diff_map, cmap="hot", vmin=0.0, vmax=1.0)
+    # --- Panel 8: Difference map |Dense − Sparse| ---
+    # Brighter = larger prediction change caused by pruning.
+    # Low diff in high-confidence regions confirms SGM correctly identified
+    # easy tokens; high diff in uncertain regions shows where pruning costs.
+    p8 = colorize(diff_map, cmap="hot", vmin=0.0, vmax=diff_map.max())
     p8 = resize_to_match(p8, left_bgr)
     save_panel(p8, os.path.join(out_dir, "08_diff_map.png"),
-               "|DA2 raw - SGM-ViT fused|  (brighter = larger SGM contribution)")
+               f"|Dense − Sparse|  mean={diff_map.mean():.4f}  (hot: brighter=larger change)")
 
-    # --- Panel 9: Paper comparison strip: raw DA2 vs fused ---
-    # Re-render DA2 on the same [0,1] normalised scale as fused for fair comparison
-    da2_norm_vis = (depth_map - depth_map.min()) / (depth_map.max() - depth_map.min() + 1e-8)
-    p4_normed = colorize(da2_norm_vis, cmap="Spectral_r", vmin=0.0, vmax=1.0)
+    # --- Panel 9: Paper comparison figure: Dense vs Sparse ---
+    p4_normed = colorize(dense_norm, cmap="Spectral_r", vmin=0.0, vmax=1.0)
     p4_normed = resize_to_match(p4_normed, left_bgr)
 
     build_comparison_figure(
         da2_bgr        = p4_normed,
-        fused_bgr      = p7,
+        sparse_bgr     = p7,
         diff_bgr       = p8,
         prune_ratio    = prune_ratio,
         attn_reduction = attn_reduction,
         threshold      = args.threshold,
-        out_path       = os.path.join(out_dir, "09_comparison_da2_fused.png"),
+        out_path       = os.path.join(out_dir, "09_comparison_dense_vs_sparse.png"),
     )
 
-    # --- Summary figure (3×3 grid) ---
+    # --- Summary figure (2×4 grid) ---
     panels = [
-        ("(1) Input Left Image",                         p1),
-        ("(2) SGM Disparity",                            p2),
+        ("(1) Input Left Image",                              p1),
+        ("(2) SGM Disparity",                                 p2),
         (f"(3) SGM Confidence (μ={confidence_map.mean():.2f})", p3),
-        (f"(4) DA2 Raw Depth ({args.encoder})",          p4),
-        (f"(5) Token Grid (prune {100*prune_ratio:.1f}%)", grid_img),
-        ("(6) Routing Overlay",                          p6),
-        (f"(7) SGM-ViT Fused Depth (θ={args.threshold:.2f})", p7),
-        (f"(8) |DA2 − Fused| Diff (attn↓{100*attn_reduction:.1f}%)", p8),
+        (f"(4) Dense DA2 — Baseline ({args.encoder})",        p4),
+        (f"(5) Token Grid (prune {100*prune_ratio:.1f}%)",    grid_img),
+        ("(6) Routing Overlay",                               p6),
+        (f"(7) Sparse DA2 — SGM-ViT (θ={args.threshold:.2f})", p7),
+        (f"(8) |Dense−Sparse| (attn↓{100*attn_reduction:.1f}%)", p8),
     ]
     build_summary_figure(panels, os.path.join(out_dir, "00_summary.png"), ncol=4)
 
     # ------------------------------------------------------------------
     # Final stats
     # ------------------------------------------------------------------
-    sgm_contribution = float(diff_map.mean())
+    mean_diff = float(diff_map.mean())
     print(f"\n{'='*60}")
     print(f"  Demo complete.  Results saved to: {out_dir}/")
     print(f"{'='*60}")
     print(f"  Encoder         : DepthAnythingV2-{args.encoder.upper()}")
     print(f"  Token grid      : {TOKEN_GRID_SIZE}×{TOKEN_GRID_SIZE} = {N} tokens")
     print(f"  Threshold θ     : {args.threshold}")
-    print(f"  Pruning ratio   : {100*prune_ratio:.1f}%  ({n_prune}/{N} tokens skipped)")
+    print(f"  Pruning ratio   : {100*prune_ratio:.1f}%  ({n_prune}/{N} tokens zeroed)")
     print(f"  Attn FLOPs ↓    : ~{100*attn_reduction:.1f}%  (quadratic attention)")
-    print(f"  SGM contribution: mean |DA2-fused| = {sgm_contribution:.4f}  "
-          f"(higher = SGM changed more pixels)")
+    print(f"  Mean |Dense−Sparse| : {mean_diff:.4f}  "
+          f"(depth prediction change from pruning)")
     print(f"{'='*60}")
     print(f"  Key outputs:")
-    print(f"    04_da2_depth.png           — raw DepthAnythingV2")
-    print(f"    07_fusion_depth.png        — SGM-ViT fused depth")
-    print(f"    09_comparison_da2_fused.png— side-by-side comparison (paper figure)")
+    print(f"    04_da2_depth.png                — Dense DA2 baseline")
+    print(f"    07_sparse_da2_depth.png         — Sparse DA2 (SGM-ViT output)")
+    print(f"    09_comparison_dense_vs_sparse.png — paper comparison figure")
     print(f"{'='*60}\n")
 
 
