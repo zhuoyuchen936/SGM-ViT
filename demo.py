@@ -738,12 +738,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--disparity-range", type=int, default=128)
     p.add_argument("--conf-sigma", type=float, default=5.0,
         help="Gaussian σ for SGM confidence map smoothing.")
-    p.add_argument("--baseline", type=float, default=0.54,
-        help="Stereo baseline in metres for metric alignment (KITTI: 0.54).")
-    p.add_argument("--focal-px", type=float, default=721.5,
-        help="Focal length in pixels for metric alignment (KITTI: ~721.5).")
     p.add_argument("--no-align", action="store_true",
-        help="Skip metric depth alignment.")
+        help="Skip disparity-space alignment of monocular depth.")
     p.add_argument("--out-dir",
         default=os.path.join(_SCRIPT_DIR, "results", "demo"))
     p.add_argument("--no-sgm", action="store_true",
