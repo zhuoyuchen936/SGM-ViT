@@ -37,7 +37,7 @@ Expected outputs (in results/demo/)
   05_token_routing.png       — 37×37 token keep/prune grid
   06_routing_overlay.png     — routing decision overlaid on input image
   07_sparse_da2_depth.png    — Sparse DA2 output (pruning + re-assembly)
-  08_aligned_depth.png       — Metric-aligned depth (metres, viridis)
+  08_aligned_disparity.png   — Mono depth aligned to SGM disparity space (pixels, plasma)
   09_diff_map.png            — |Dense − Sparse| per-pixel diff (hot)
   10_comparison.png          — 4-panel paper figure
   00_summary.png             — 3×4 composite panel
@@ -195,12 +195,17 @@ def build_comparison_figure(
     scale: float,
     shift: float,
     out_path: str,
+    aligned_is_disparity: bool = False,
 ) -> None:
     """
     4-panel paper figure:
-      Dense DA2  |  Sparse DA2 (SGM-ViT)  |  Metric-Aligned  |  |Dense−Sparse|
+      Dense DA2  |  Sparse DA2 (SGM-ViT)  |  Aligned to SGM disp  |  |Dense−Sparse|
     """
     fig, axes = plt.subplots(1, 4, figsize=(28, 5.5), constrained_layout=True)
+    aligned_subtitle = (
+        f"s={scale:.4f}  t={shift:.4f}  [mono depth → SGM disp space, px]"
+        if aligned_is_disparity else "no alignment"
+    )
     panels = [
         (da2_bgr,
          "Dense DA2 (Baseline)",
@@ -209,8 +214,8 @@ def build_comparison_figure(
          "Sparse DA2 (SGM-ViT)",
          f"{100*prune_ratio:.1f}% pruned  |  Attn FLOPs↓{100*attn_reduction:.1f}%  |  θ={threshold:.2f}"),
         (aligned_bgr,
-         "Metric-Aligned Depth",
-         f"scale={scale:.4f}  shift={shift:.4f}  [metres, viridis]"),
+         "Mono Depth → SGM Disparity Space",
+         aligned_subtitle),
         (diff_bgr,
          "|Dense − Sparse| Difference",
          "Brighter = larger prediction change from pruning"),
@@ -221,7 +226,7 @@ def build_comparison_figure(
         ax.set_xlabel(subtitle, fontsize=9, color="#555555")
         ax.axis("off")
     fig.suptitle(
-        "SGM-ViT: Dense DA2 vs. Sparse DA2 (pruning + re-assembly) vs. Metric-Aligned",
+        "SGM-ViT: Dense DA2 vs. Sparse DA2 (pruning + re-assembly) vs. SGM-Disparity-Aligned",
         fontsize=12, fontweight="bold", y=1.01,
     )
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
@@ -309,7 +314,7 @@ def run_sparse_da2(
     # ----------------------------------------------------------------
     # Hook 1: zero pruned tokens at blocks[prune_layer] input
     # ----------------------------------------------------------------
-    def _pre_hook(module, args):
+    def _pre_hook(_module, args):
         x = args[0].clone()                                     # (B, 1+nr+N, D)
         x[:, 1 + nr : 1 + nr + N_actual, :] *= keep_weight.to(x.device)
         return (x,) + args[1:]
@@ -367,48 +372,48 @@ def align_depth_to_sgm(
     depth_mono: np.ndarray,
     disparity_raw: np.ndarray,
     confidence_map: np.ndarray,
-    baseline_m: float = 0.54,
-    focal_px: float = 721.5,
     min_disparity: float = 1.0,
     conf_threshold: float = 0.7,
 ) -> tuple[np.ndarray, float, float]:
     """
-    Align relative monocular depth to metric scale using SGM disparity.
+    Pull relative monocular depth into the physical SGM disparity space.
 
     Formulation
     -----------
-    Let  d = depth_mono  (relative, arbitrary scale and shift)
-         D = B * f / disp  (metric depth from SGM stereo, in metres)
+    DAv2 outputs affine-invariant depth where larger values correspond to
+    closer objects — the same monotonicity as stereo disparity.  We
+    therefore align directly in disparity units (pixels) without
+    converting to metric depth:
 
-    Find scalar scale ``s`` and shift ``t`` that minimise the
-    least-squares residual over reliably matched stereo pixels::
+        argmin_{s,t}  Σ_i || s·d_i + t − disp_i ||²
 
-        argmin_{s,t}  Σ_i || s·d_i + t − D_i ||²
+    where  d_i    = depth_mono at reliable pixel i
+           disp_i = raw SGM disparity at the same pixel
 
-    The normal equations give a closed-form solution via
-    ``numpy.linalg.lstsq``.
+    The least-squares solution gives a scale s and shift t such that
+    ``s·d + t`` is expressed in disparity pixels, matching the SGM
+    physical disparity scale.  No camera intrinsics are required.
 
     Parameters
     ----------
-    depth_mono     : (H, W) float32  relative monocular depth (any scale)
+    depth_mono     : (H, W) float32  relative monocular depth (arbitrary scale)
     disparity_raw  : (H, W) float32  raw SGM disparity in pixels
     confidence_map : (H, W) float32  SGM per-pixel confidence [0, 1]
-    baseline_m     : float  stereo baseline in metres   (KITTI: 0.54 m)
-    focal_px       : float  focal length in pixels       (KITTI: ~721.5 px)
-    min_disparity  : float  minimum valid SGM disparity  (avoids D → ∞)
-    conf_threshold : float  minimum confidence to include a pixel
+    min_disparity  : float  minimum valid SGM disparity
+    conf_threshold : float  minimum SGM confidence to include a pixel
 
     Returns
     -------
-    depth_aligned : (H, W) float32  metric depth in metres (non-negative)
-    scale         : float            ``depth_aligned ≈ scale·depth_mono + shift``
-    shift         : float
+    disp_aligned : (H, W) float32  monocular depth aligned to disparity space
+                   (same units and scale as SGM disparity, pixels, ≥ 0)
+    scale        : float
+    shift        : float   disp_aligned ≈ scale·depth_mono + shift
     """
     if disparity_raw is None or float(disparity_raw.max()) < min_disparity:
-        print("  [align] No valid SGM disparity — skipping metric alignment.")
+        print("  [align] No valid SGM disparity — skipping alignment.")
         return depth_mono.astype(np.float32), 1.0, 0.0
 
-    # Match spatial resolution to monocular depth
+    # Match spatial resolution to monocular depth map
     if disparity_raw.shape != depth_mono.shape:
         disparity_raw  = cv2.resize(disparity_raw,
                                     (depth_mono.shape[1], depth_mono.shape[0]),
@@ -421,24 +426,24 @@ def align_depth_to_sgm(
     n_valid = int(valid.sum())
 
     if n_valid < 50:
-        print(f"  [align] Only {n_valid} valid SGM pixels — skipping metric alignment.")
+        print(f"  [align] Only {n_valid} valid SGM pixels — skipping alignment.")
         return depth_mono.astype(np.float32), 1.0, 0.0
 
-    # SGM disparity → metric depth   D = B·f / disp
-    D = (baseline_m * focal_px) / disparity_raw[valid].astype(np.float64)
+    # Target: SGM disparity in pixels (physical disparity space)
+    D = disparity_raw[valid].astype(np.float64)
     d = depth_mono[valid].astype(np.float64)
 
-    # Least-squares:  [d | 1] @ [s, t]^T  ≈  D
+    # Least-squares:  [d | 1] @ [s, t]^T  ≈  D  (disparity domain)
     A             = np.column_stack([d, np.ones_like(d)])
     coef, _, _, _ = np.linalg.lstsq(A, D, rcond=None)
     scale, shift  = float(coef[0]), float(coef[1])
 
-    depth_aligned = np.clip(scale * depth_mono + shift, 0.0, None).astype(np.float32)
+    disp_aligned = np.clip(scale * depth_mono + shift, 0.0, None).astype(np.float32)
 
     print(f"  [align] n_valid={n_valid:,}  scale={scale:.4f}  shift={shift:.4f}  "
-          f"range: [{depth_aligned.min():.2f}, {depth_aligned.max():.2f}] m")
+          f"disp range: [{disp_aligned.min():.2f}, {disp_aligned.max():.2f}] px")
 
-    return depth_aligned, scale, shift
+    return disp_aligned, scale, shift
 
 
 # ---------------------------------------------------------------------------
@@ -567,16 +572,14 @@ def run_demo(args: argparse.Namespace) -> None:
     # ------------------------------------------------------------------
     scale, shift = 1.0, 0.0
     if args.no_align or args.no_sgm or disp_raw is None:
-        print("[5.5/6] Skipping metric alignment (--no-align or no SGM).")
-        depth_aligned = depth_sparse
+        print("[5.5/6] Skipping disparity-space alignment (--no-align or no SGM).")
+        disp_aligned = depth_sparse
     else:
-        print("[5.5/6] Metric alignment (least-squares scale+shift from SGM) ...")
-        depth_aligned, scale, shift = align_depth_to_sgm(
+        print("[5.5/6] Disparity-space alignment (pull monocular depth → SGM disp) ...")
+        disp_aligned, scale, shift = align_depth_to_sgm(
             depth_mono     = depth_sparse,
             disparity_raw  = disp_raw,
             confidence_map = confidence_map,
-            baseline_m     = args.baseline,
-            focal_px       = args.focal_px,
             conf_threshold = 0.7,
         )
 
@@ -635,12 +638,12 @@ def run_demo(args: argparse.Namespace) -> None:
                f"Sparse DA2 — SGM-ViT ({100*prune_ratio:.1f}% pruned, "
                f"block={args.prune_layer}{ras_label})")
 
-    # Panel 8 — metric-aligned depth
-    p8 = colorize(depth_aligned, cmap="viridis")
+    # Panel 8 — disparity-aligned monocular depth
+    p8 = colorize(disp_aligned, cmap="plasma")
     p8 = resize_to_match(p8, left_bgr)
     align_label = f"s={scale:.4f} t={shift:.4f}" if not (args.no_align or args.no_sgm) else "no alignment"
-    save_panel(p8, os.path.join(out_dir, "08_aligned_depth.png"),
-               f"Metric-Aligned Depth [{align_label}] (viridis)")
+    save_panel(p8, os.path.join(out_dir, "08_aligned_disparity.png"),
+               f"Mono Depth Aligned to SGM Disparity Space [{align_label}] (px)")
 
     # Panel 9 — diff map |Dense − Sparse|
     p9 = colorize(diff_map, cmap="hot", vmin=0.0, vmax=diff_map.max())
@@ -663,6 +666,7 @@ def run_demo(args: argparse.Namespace) -> None:
         scale          = scale,
         shift          = shift,
         out_path       = os.path.join(out_dir, "10_comparison.png"),
+        aligned_is_disparity = not (args.no_align or args.no_sgm),
     )
 
     # Summary 3×4 composite
@@ -674,7 +678,7 @@ def run_demo(args: argparse.Namespace) -> None:
         (f"(5) Token Grid (prune {100*prune_ratio:.1f}%)",  grid_img),
         ("(6) Routing Overlay",                             p6),
         (f"(7) Sparse DA2 (block={args.prune_layer}{ras_label})", p7),
-        (f"(8) Aligned Depth [{align_label}]",              p8),
+        (f"(8) Aligned Disparity [{align_label}]",           p8),
         (f"(9) |Dense−Sparse| (attn↓{100*attn_reduction:.1f}%)", p9),
     ]
     build_summary_figure(summary_panels, os.path.join(out_dir, "00_summary.png"), ncol=4)
@@ -695,12 +699,12 @@ def run_demo(args: argparse.Namespace) -> None:
     print(f"  Mean |Dense−Sparse|: {diff_map.mean():.4f}")
     if not (args.no_align or args.no_sgm):
         print(f"  Alignment (s, t)  : ({scale:.4f}, {shift:.4f})")
-        print(f"  Aligned depth     : [{depth_aligned.min():.2f}, {depth_aligned.max():.2f}] m")
+        print(f"  Aligned disp range: [{disp_aligned.min():.2f}, {disp_aligned.max():.2f}] px")
     print(f"{'='*62}")
     print(f"  Key outputs:")
     print(f"    04  — Dense DA2 baseline")
     print(f"    07  — Sparse DA2 (SGM-ViT) with re-assembly")
-    print(f"    08  — Metric-aligned depth (metres)")
+    print(f"    08  — Mono depth aligned to SGM disparity space (px)")
     print(f"    10  — 4-panel paper comparison figure")
     print(f"{'='*62}\n")
 
