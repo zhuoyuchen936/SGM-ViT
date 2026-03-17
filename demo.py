@@ -15,8 +15,10 @@ Demonstrates the full SGM-ViT pipeline on a stereo image pair:
           kept neighbours (restores spatial completeness at all decoder
           input levels).
   5. Metric depth alignment  →  least-squares scale & shift from SGM
-       disparity.  Converts relative monocular depth to metric metres.
-  6. Multi-panel visualisation  →  saved to results/demo/
+       disparity for both dense and sparse DA2.
+  6. SGM + DA2 fusion  →  use SGM where confident, aligned DA2 elsewhere;
+       confidence-weighted soft blend avoids boundary discontinuities.
+  7. Multi-panel visualisation  →  saved to results/demo/
 
 Usage
 -----
@@ -26,6 +28,10 @@ Usage
   python demo.py --prune-layer 6         # prune at block 6 (not 0)
   python demo.py --no-reassembly         # disable token re-assembly
   python demo.py --no-align              # skip metric alignment
+  python demo.py --fusion-strategy hard_switch   # binary SGM/DA2 selector
+  python demo.py --fusion-strategy outlier_aware --outlier-threshold 10
+  python demo.py --fusion-strategy two_threshold --theta-low 0.3 --theta-high 0.7
+  python demo.py --conf-threshold 0.55   # fusion blend boundary
   python demo.py --help
 
 Expected outputs (in results/demo/)
@@ -38,9 +44,11 @@ Expected outputs (in results/demo/)
   06_routing_overlay.png     — routing decision overlaid on input image
   07_sparse_da2_depth.png    — Sparse DA2 output (pruning + re-assembly)
   08_aligned_disparity.png   — Mono depth aligned to SGM disparity space (pixels, plasma)
-  09_diff_map.png            — |Dense − Sparse| per-pixel diff (hot)
-  10_comparison.png          — 4-panel paper figure
-  00_summary.png             — 3×4 composite panel
+  09_fused_sgm_dense_da2.png — Fused SGM + Dense DA2 (SGM where confident, DA2 elsewhere)
+  09b_fused_sgm_sparse_da2.png — Fused SGM + Sparse DA2 (GAS-accelerated)
+  10_diff_map.png            — |Dense − Sparse| per-pixel diff (hot)
+  11_comparison.png          — 4-panel paper figure
+  00_summary.png             — composite panel
 
 Runtime notes
 -------------
@@ -65,6 +73,7 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import torch
 import torch.nn.functional as F
+from scipy.optimize import least_squares as _scipy_least_squares
 
 # ---------------------------------------------------------------------------
 # Path setup
@@ -80,9 +89,11 @@ if _DA2_DIR not in sys.path:
 # ---------------------------------------------------------------------------
 # Project imports
 # ---------------------------------------------------------------------------
-from core.sgm_wrapper      import run_sgm_with_confidence, confidence_to_token_grid
-from core.token_router     import SGMConfidenceTokenRouter
-from core.token_reassembly import reassemble_token_features
+from core.sgm_wrapper        import run_sgm_with_confidence, confidence_to_token_grid
+from core.token_router       import SGMConfidenceTokenRouter
+from core.token_reassembly   import reassemble_token_features
+from core.sparse_attention   import gas_get_intermediate_layers
+from core.eval_utils         import compute_token_grid_size
 
 from depth_anything_v2.dpt import DepthAnythingV2
 
@@ -96,7 +107,7 @@ DA2_MODEL_CONFIGS = {
     "vitl": {"encoder": "vitl", "features": 256, "out_channels": [256, 512, 1024, 1024]},
 }
 
-TOKEN_GRID_SIZE = 37          # 518 // 14 = 37 (for square 518-px input)
+TOKEN_GRID_SIZE = compute_token_grid_size(518, 14)  # 518 // 14 = 37
 EMBED_DIM_MAP   = {"vits": 384, "vitb": 768, "vitl": 1024}
 
 
@@ -364,6 +375,94 @@ def run_sparse_da2(
         model.forward = original_forward
 
 
+def run_masked_sparse_da2(
+    model: DepthAnythingV2,
+    image_bgr: np.ndarray,
+    prune_mask: torch.Tensor,
+    input_size: int = 518,
+    prune_layer: int = 0,
+    do_reassembly: bool = True,
+) -> np.ndarray:
+    """
+    Run DepthAnythingV2 with **Gather-Attend-Scatter (GAS)** sparse attention.
+
+    Unlike :func:`run_sparse_da2` which *zeros* pruned tokens (causing
+    attention pollution), this function physically excludes pruned tokens
+    from the attention computation.  For each ViT block ≥ ``prune_layer``:
+
+      1. **Gather** — extract ``[CLS, kept_patches]`` into a compact sequence
+      2. **Attend** — standard attention on the short sequence
+      3. **Scatter** — write outputs back; pruned tokens retain previous features
+      4. **FFN** — MLP on all tokens (per-token, no cross-token dependency)
+
+    Pretrained weights work unchanged because DINOv2 attention is content-based
+    (no relative positional encoding), positional encoding is added once
+    before all blocks, and all linear layers are per-token operations.
+
+    Parameters
+    ----------
+    model         : DepthAnythingV2, eval mode
+    image_bgr     : (H, W, 3) uint8 BGR
+    prune_mask    : (N,) bool CPU Tensor, True = pruned
+    input_size    : int
+    prune_layer   : int — first ViT block that uses GAS (0-based)
+    do_reassembly : bool — fill pruned positions via Gaussian interpolation
+
+    Returns
+    -------
+    depth : (H_orig, W_orig) float32
+    """
+    image_tensor, (h, w) = model.image2tensor(image_bgr, input_size)
+    patch_h = image_tensor.shape[-2] // 14
+    patch_w = image_tensor.shape[-1] // 14
+    N_actual = patch_h * patch_w
+
+    # ---- Adapt prune_mask to actual token grid (handles non-square images) ----
+    if prune_mask.shape[0] != N_actual:
+        G = int(round(prune_mask.shape[0] ** 0.5))
+        pm_np = prune_mask.reshape(G, G).float().numpy()
+        pm_np = cv2.resize(pm_np, (patch_w, patch_h),
+                           interpolation=cv2.INTER_NEAREST)
+        prune_mask_2d = torch.from_numpy(pm_np > 0.5)
+    else:
+        prune_mask_2d = prune_mask.reshape(patch_h, patch_w)
+
+    prune_mask_1d = prune_mask_2d.reshape(-1)
+    keep_indices = torch.where(~prune_mask_1d)[0].to(image_tensor.device)
+
+    # ---- GAS backbone: gather-attend-scatter on intermediate layers ----
+    layer_idx = model.intermediate_layer_idx[model.encoder]
+
+    with torch.no_grad():
+        features = gas_get_intermediate_layers(
+            backbone=model.pretrained,
+            x_input=image_tensor,
+            layer_indices=layer_idx,
+            keep_indices=keep_indices,
+            prune_layer=prune_layer,
+        )
+
+        # Optional: Gaussian reassembly at pruned positions
+        if do_reassembly:
+            features = reassemble_token_features(
+                features, prune_mask_2d, patch_h, patch_w,
+            )
+
+        # DPT decoder
+        depth_tensor = model.depth_head(features, patch_h, patch_w)
+        depth_tensor = F.relu(depth_tensor).squeeze(1)
+
+        if depth_tensor.dim() == 2:
+            depth_tensor = depth_tensor.unsqueeze(0)
+
+        depth = F.interpolate(
+            depth_tensor[:, None], (h, w),
+            mode="bilinear", align_corners=True,
+        )[0, 0]
+
+    return depth.cpu().numpy()
+
+
 # ---------------------------------------------------------------------------
 # Metric depth alignment
 # ---------------------------------------------------------------------------
@@ -385,14 +484,18 @@ def align_depth_to_sgm(
     therefore align directly in disparity units (pixels) without
     converting to metric depth:
 
-        argmin_{s,t}  Σ_i || s·d_i + t − disp_i ||²
+        argmin_{s,t}  Σ_i ρ_H( s·d_i + t − disp_i )
 
     where  d_i    = depth_mono at reliable pixel i
            disp_i = raw SGM disparity at the same pixel
+           ρ_H    = Huber loss (f_scale = 3.0 px)
 
-    The least-squares solution gives a scale s and shift t such that
-    ``s·d + t`` is expressed in disparity pixels, matching the SGM
-    physical disparity scale.  No camera intrinsics are required.
+    Huber loss down-weights SGM outliers (wrong matches in textured or
+    thin-object regions that pass the LR-check but still carry large
+    disparity errors).  This suppresses the systematic bias that plain
+    L2 regression exhibits at near/far depth extremes, reducing both
+    EPE and the number of D1-threshold crossings.  No camera intrinsics
+    are required.
 
     Parameters
     ----------
@@ -433,10 +536,19 @@ def align_depth_to_sgm(
     D = disparity_raw[valid].astype(np.float64)
     d = depth_mono[valid].astype(np.float64)
 
-    # Least-squares:  [d | 1] @ [s, t]^T  ≈  D  (disparity domain)
-    A             = np.column_stack([d, np.ones_like(d)])
-    coef, _, _, _ = np.linalg.lstsq(A, D, rcond=None)
-    scale, shift  = float(coef[0]), float(coef[1])
+    # Robust least-squares with Huber loss:  s·d + t ≈ D
+    # Huber down-weights SGM outliers (wrong matches in textured / thin-object
+    # regions that pass the LR-check but still carry large disparity errors).
+    # This suppresses the systematic bias that L2 regression has at near/far
+    # extremes, reducing both EPE and the number of D1-threshold crossings.
+    def _residuals(coef):
+        return coef[0] * d + coef[1] - D
+
+    # Warm-start from the L2 solution for fast convergence
+    A_ls          = np.column_stack([d, np.ones_like(d)])
+    coef0, _, _, _ = np.linalg.lstsq(A_ls, D, rcond=None)
+    result        = _scipy_least_squares(_residuals, coef0, loss='huber', f_scale=3.0)
+    scale, shift  = float(result.x[0]), float(result.x[1])
 
     disp_aligned = np.clip(scale * depth_mono + shift, 0.0, None).astype(np.float32)
 
@@ -444,6 +556,174 @@ def align_depth_to_sgm(
           f"disp range: [{disp_aligned.min():.2f}, {disp_aligned.max():.2f}] px")
 
     return disp_aligned, scale, shift
+
+
+def fuse_sgm_da2(
+    sgm_disp: np.ndarray,
+    da2_aligned: np.ndarray,
+    confidence_map: np.ndarray,
+    conf_threshold: float = 0.5,
+) -> np.ndarray:
+    """
+    Pixel-level SGM + DA2 fusion.
+
+    Decision rule per pixel
+    -----------------------
+    * SGM confident  (sgm_disp > 0  AND  conf ≥ threshold) → use SGM directly.
+      SGM is geometrically accurate in these regions (sv D1 ≈ 8%).
+    * SGM uncertain / hole (sgm_disp = 0  OR  conf < threshold) → use DA2.
+      DA2 provides semantic coverage where SGM fails.
+
+    A confidence-weighted soft blend is applied instead of a hard threshold
+    to avoid discontinuities at region boundaries:
+
+        alpha  = clip(conf / threshold, 0, 1)  if sgm_disp > 0  else 0
+        fused  = alpha · sgm_disp + (1 − alpha) · da2_aligned
+
+    When conf ≥ threshold the alpha saturates at 1 and SGM is used exclusively.
+    When conf = 0 or sgm_disp = 0 the DA2 prediction is used exclusively.
+
+    Parameters
+    ----------
+    sgm_disp       : (H, W) float32  raw SGM disparity; 0 = hole / invalid
+    da2_aligned    : (H, W) float32  DA2 depth aligned to SGM disparity space
+    confidence_map : (H, W) float32  per-pixel SGM confidence [0, 1]
+    conf_threshold : float           confidence level at which alpha saturates to 1
+
+    Returns
+    -------
+    fused : (H, W) float32  fused disparity map in SGM pixel units
+    """
+    sgm_valid = (sgm_disp > 0).astype(np.float32)
+    # alpha ∈ [0,1]: 1 = full SGM, 0 = full DA2
+    alpha = sgm_valid * np.clip(confidence_map / max(conf_threshold, 1e-6), 0.0, 1.0)
+    fused = alpha * sgm_disp + (1.0 - alpha) * da2_aligned
+    return fused.clip(0.0, None).astype(np.float32)
+
+
+def fuse_hard_switch(
+    sgm_disp: np.ndarray,
+    da2_aligned: np.ndarray,
+    confidence_map: np.ndarray,
+    conf_threshold: float = 0.5,
+) -> np.ndarray:
+    """
+    Binary per-pixel selector: use SGM where valid AND confident, DA2 elsewhere.
+
+    Decision rule:
+        if sgm_disp > 0 AND conf >= conf_threshold → use SGM
+        else → use DA2
+
+    Simplest FPGA mapping: 1 comparator + 1 mux per pixel.
+    """
+    use_sgm = (sgm_disp > 0) & (confidence_map >= conf_threshold)
+    fused = np.where(use_sgm, sgm_disp, da2_aligned)
+    return fused.clip(0.0, None).astype(np.float32)
+
+
+def fuse_outlier_aware(
+    sgm_disp: np.ndarray,
+    da2_aligned: np.ndarray,
+    confidence_map: np.ndarray,
+    conf_threshold: float = 0.5,
+    outlier_threshold: float = 10.0,
+) -> np.ndarray:
+    """
+    Soft blend with outlier attenuation.
+
+    Catches SGM wrong matches (repetitive texture / thin objects) that pass
+    the LR-check but have high |SGM − DA2| disagreement:
+
+        alpha_base      = clip(conf / θ, 0, 1) * sgm_valid
+        discrepancy     = |sgm_disp − da2_aligned|
+        outlier_factor  = clip(1 − discrepancy / outlier_threshold, 0, 1)
+        alpha           = alpha_base * outlier_factor
+        fused           = alpha * SGM + (1 − alpha) * DA2
+
+    FPGA cost: 1 DSP + 3 LUTs per pixel.
+    """
+    sgm_valid = (sgm_disp > 0).astype(np.float32)
+    alpha_base = sgm_valid * np.clip(confidence_map / max(conf_threshold, 1e-6), 0.0, 1.0)
+    discrepancy = np.abs(sgm_disp - da2_aligned)
+    outlier_factor = np.clip(1.0 - discrepancy / max(outlier_threshold, 1e-6), 0.0, 1.0)
+    alpha = alpha_base * outlier_factor
+    fused = alpha * sgm_disp + (1.0 - alpha) * da2_aligned
+    return fused.clip(0.0, None).astype(np.float32)
+
+
+def fuse_two_threshold(
+    sgm_disp: np.ndarray,
+    da2_aligned: np.ndarray,
+    confidence_map: np.ndarray,
+    theta_low: float = 0.3,
+    theta_high: float = 0.7,
+) -> np.ndarray:
+    """
+    Dead-zone cascade with two confidence thresholds.
+
+        conf < θ_low            → pure DA2  (alpha = 0)
+        θ_low ≤ conf < θ_high   → linear blend:  alpha = (conf − θ_low) / (θ_high − θ_low)
+        conf ≥ θ_high           → pure SGM  (alpha = 1)
+
+    Prevents very-low-confidence SGM from leaking into the output.
+    FPGA cost: 2 comparators + 1 DSP per pixel.  Reciprocal
+    1 / (θ_high − θ_low) is a compile-time constant.
+    """
+    sgm_valid = (sgm_disp > 0).astype(np.float32)
+    span = max(theta_high - theta_low, 1e-6)
+    alpha = np.clip((confidence_map - theta_low) / span, 0.0, 1.0)
+    alpha = alpha * sgm_valid
+    fused = alpha * sgm_disp + (1.0 - alpha) * da2_aligned
+    return fused.clip(0.0, None).astype(np.float32)
+
+
+# ---------------------------------------------------------------------------
+# Fusion dispatcher
+# ---------------------------------------------------------------------------
+
+FUSION_STRATEGIES = {
+    'soft_blend':    fuse_sgm_da2,
+    'hard_switch':   fuse_hard_switch,
+    'outlier_aware': fuse_outlier_aware,
+    'two_threshold': fuse_two_threshold,
+}
+
+
+def fuse_dispatch(
+    strategy: str,
+    sgm_disp: np.ndarray,
+    da2_aligned: np.ndarray,
+    confidence_map: np.ndarray,
+    conf_threshold: float = 0.5,
+    outlier_threshold: float = 10.0,
+    theta_low: float = 0.3,
+    theta_high: float = 0.7,
+) -> np.ndarray:
+    """
+    Route to the selected fusion function with the appropriate kwargs.
+    """
+    if strategy not in FUSION_STRATEGIES:
+        raise ValueError(f"Unknown fusion strategy '{strategy}'. "
+                         f"Choose from: {list(FUSION_STRATEGIES.keys())}")
+
+    if strategy == 'outlier_aware':
+        return fuse_outlier_aware(
+            sgm_disp, da2_aligned, confidence_map,
+            conf_threshold=conf_threshold,
+            outlier_threshold=outlier_threshold,
+        )
+    elif strategy == 'two_threshold':
+        return fuse_two_threshold(
+            sgm_disp, da2_aligned, confidence_map,
+            theta_low=theta_low,
+            theta_high=theta_high,
+        )
+    else:
+        # soft_blend and hard_switch both take conf_threshold
+        return FUSION_STRATEGIES[strategy](
+            sgm_disp, da2_aligned, confidence_map,
+            conf_threshold=conf_threshold,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -466,8 +746,10 @@ def run_demo(args: argparse.Namespace) -> None:
     print(f"  Device    : {device}")
     print(f"  Output    : {out_dir}")
     print(f"  Threshold : {args.threshold}   Prune-layer: {args.prune_layer}")
+    print(f"  Sparse mode : {args.sparse_mode}")
     print(f"  Re-assembly: {'yes' if not args.no_reassembly else 'no'}"
           f"   Alignment: {'yes' if not args.no_align else 'no'}")
+    print(f"  Fusion      : {args.fusion_strategy}")
     print(f"{'='*62}\n")
 
     # ------------------------------------------------------------------
@@ -477,18 +759,18 @@ def run_demo(args: argparse.Namespace) -> None:
     if left_bgr is None:
         raise FileNotFoundError(f"Cannot load left image: {args.left}")
     H_orig, W_orig = left_bgr.shape[:2]
-    print(f"[1/6] Left image: {W_orig}×{H_orig} px")
+    print(f"[1/7] Left image: {W_orig}×{H_orig} px")
 
     # ------------------------------------------------------------------
     # Step 2: SGM stereo matching
     # ------------------------------------------------------------------
     disp_raw = None   # kept for metric alignment
     if args.no_sgm:
-        print("[2/6] Skipping SGM (--no-sgm).  Uniform confidence = 0.5")
+        print("[2/7] Skipping SGM (--no-sgm).  Uniform confidence = 0.5")
         disparity_norm = np.zeros((H_orig, W_orig), dtype=np.float32)
         confidence_map = np.full((H_orig, W_orig), 0.5, dtype=np.float32)
     else:
-        print("[2/6] Running SGM stereo matching ...")
+        print("[2/7] Running SGM stereo matching ...")
         print("      (Numba JIT on first run: ~30-90 s)")
         t_sgm = time.perf_counter()
         disparity_norm, confidence_map, disp_raw = run_sgm_with_confidence(
@@ -503,10 +785,10 @@ def run_demo(args: argparse.Namespace) -> None:
     # ------------------------------------------------------------------
     # Step 3: Dense DepthAnythingV2 (baseline)
     # ------------------------------------------------------------------
-    print(f"[3/6] Loading DepthAnythingV2 ({args.encoder}) ...")
+    print(f"[3/7] Loading DepthAnythingV2 ({args.encoder}) ...")
     model = load_da2_model(args.encoder, args.weights, device)
 
-    print("[3/6] Dense depth inference ...")
+    print("[3/7] Dense depth inference ...")
     t_da2   = time.perf_counter()
     depth_map = model.infer_image(left_bgr, input_size=518)
     print(f"      DAv2 time: {time.perf_counter()-t_da2:.2f}s\n")
@@ -514,7 +796,7 @@ def run_demo(args: argparse.Namespace) -> None:
     # ------------------------------------------------------------------
     # Step 4: Token routing
     # ------------------------------------------------------------------
-    print(f"[4/6] Token routing (θ={args.threshold}) ...")
+    print(f"[4/7] Token routing (θ={args.threshold}) ...")
     router     = SGMConfidenceTokenRouter(
         token_grid_size      = TOKEN_GRID_SIZE,
         confidence_threshold = args.threshold,
@@ -547,19 +829,29 @@ def run_demo(args: argparse.Namespace) -> None:
     prune_mask_1d[routing["prune_idx"][0]] = True
 
     n_blocks = len(list(model.pretrained.blocks))
-    print(f"[5/6] Sparse DA2 inference ...")
+    print(f"[5/7] Sparse DA2 inference  (mode: {args.sparse_mode}) ...")
     print(f"      Prune at block: {args.prune_layer}/{n_blocks-1}")
     print(f"      Re-assembly   : {'enabled' if not args.no_reassembly else 'disabled'}")
 
-    t_sparse    = time.perf_counter()
-    depth_sparse = run_sparse_da2(
-        model         = model,
-        image_bgr     = left_bgr,
-        prune_mask    = prune_mask_1d,
-        input_size    = 518,
-        prune_layer   = args.prune_layer,
-        do_reassembly = not args.no_reassembly,
-    )
+    t_sparse = time.perf_counter()
+    if args.sparse_mode == "mask":
+        depth_sparse = run_masked_sparse_da2(
+            model         = model,
+            image_bgr     = left_bgr,
+            prune_mask    = prune_mask_1d,
+            input_size    = 518,
+            prune_layer   = args.prune_layer,
+            do_reassembly = not args.no_reassembly,
+        )
+    else:
+        depth_sparse = run_sparse_da2(
+            model         = model,
+            image_bgr     = left_bgr,
+            prune_mask    = prune_mask_1d,
+            input_size    = 518,
+            prune_layer   = args.prune_layer,
+            do_reassembly = not args.no_reassembly,
+        )
     print(f"      Sparse time: {time.perf_counter()-t_sparse:.2f}s\n")
 
     # Dense/sparse normalised to [0,1] for diff computation
@@ -570,23 +862,85 @@ def run_demo(args: argparse.Namespace) -> None:
     # ------------------------------------------------------------------
     # Step 5.5: Metric depth alignment via SGM least-squares
     # ------------------------------------------------------------------
+    scale_dense, shift_dense = 1.0, 0.0
     scale, shift = 1.0, 0.0
     if args.no_align or args.no_sgm or disp_raw is None:
-        print("[5.5/6] Skipping disparity-space alignment (--no-align or no SGM).")
+        print("[5.5/7] Skipping disparity-space alignment (--no-align or no SGM).")
+        disp_dense_aligned = depth_map
         disp_aligned = depth_sparse
     else:
-        print("[5.5/6] Disparity-space alignment (pull monocular depth → SGM disp) ...")
+        print("[5.5/7] Disparity-space alignment (pull monocular depth → SGM disp) ...")
+        print("      Aligning dense DA2 ...")
+        disp_dense_aligned, scale_dense, shift_dense = align_depth_to_sgm(
+            depth_mono     = depth_map,
+            disparity_raw  = disp_raw,
+            confidence_map = confidence_map,
+            conf_threshold = args.conf_threshold,
+        )
+        print("      Aligning sparse DA2 ...")
         disp_aligned, scale, shift = align_depth_to_sgm(
             depth_mono     = depth_sparse,
             disparity_raw  = disp_raw,
             confidence_map = confidence_map,
-            conf_threshold = 0.7,
+            conf_threshold = args.conf_threshold,
         )
 
     # ------------------------------------------------------------------
-    # Step 6: Save visualisations
+    # Step 6: SGM + DA2 Fusion (Dense and Sparse)
     # ------------------------------------------------------------------
-    print("[6/6] Saving visualisations ...")
+    if args.no_align or args.no_sgm or disp_raw is None:
+        print("[6/7] Skipping fusion (no alignment available).")
+        disp_fused = disp_dense_aligned
+        disp_fused_sparse = disp_aligned
+    else:
+        print(f"[6/7] Fusing SGM + aligned DA2  (strategy: {args.fusion_strategy}) ...")
+        sgm_for_fuse  = disp_raw
+        conf_for_fuse = confidence_map
+        if disp_raw.shape != disp_dense_aligned.shape:
+            sgm_for_fuse = cv2.resize(disp_raw,
+                (disp_dense_aligned.shape[1], disp_dense_aligned.shape[0]),
+                interpolation=cv2.INTER_NEAREST)
+            conf_for_fuse = cv2.resize(confidence_map,
+                (disp_dense_aligned.shape[1], disp_dense_aligned.shape[0]),
+                interpolation=cv2.INTER_LINEAR)
+        # Fused SGM + Dense DA2
+        disp_fused = fuse_dispatch(
+            strategy          = args.fusion_strategy,
+            sgm_disp          = sgm_for_fuse,
+            da2_aligned       = disp_dense_aligned,
+            confidence_map    = conf_for_fuse,
+            conf_threshold    = args.conf_threshold,
+            outlier_threshold = args.outlier_threshold,
+            theta_low         = args.theta_low,
+            theta_high        = args.theta_high,
+        )
+        print(f"      Fused SGM+Dense  disp range: [{disp_fused.min():.2f}, {disp_fused.max():.2f}] px")
+
+        # Fused SGM + Sparse DA2
+        sgm_for_fuse_sp  = sgm_for_fuse
+        conf_for_fuse_sp = conf_for_fuse
+        if disp_aligned.shape != disp_dense_aligned.shape:
+            disp_aligned_resized = cv2.resize(disp_aligned,
+                (disp_dense_aligned.shape[1], disp_dense_aligned.shape[0]),
+                interpolation=cv2.INTER_LINEAR)
+        else:
+            disp_aligned_resized = disp_aligned
+        disp_fused_sparse = fuse_dispatch(
+            strategy          = args.fusion_strategy,
+            sgm_disp          = sgm_for_fuse_sp,
+            da2_aligned       = disp_aligned_resized,
+            confidence_map    = conf_for_fuse_sp,
+            conf_threshold    = args.conf_threshold,
+            outlier_threshold = args.outlier_threshold,
+            theta_low         = args.theta_low,
+            theta_high        = args.theta_high,
+        )
+        print(f"      Fused SGM+Sparse disp range: [{disp_fused_sparse.min():.2f}, {disp_fused_sparse.max():.2f}] px\n")
+
+    # ------------------------------------------------------------------
+    # Step 7: Save visualisations
+    # ------------------------------------------------------------------
+    print("[7/7] Saving visualisations ...")
 
     # Panel 1
     p1 = left_bgr.copy()
@@ -645,13 +999,27 @@ def run_demo(args: argparse.Namespace) -> None:
     save_panel(p8, os.path.join(out_dir, "08_aligned_disparity.png"),
                f"Mono Depth Aligned to SGM Disparity Space [{align_label}] (px)")
 
-    # Panel 9 — diff map |Dense − Sparse|
-    p9 = colorize(diff_map, cmap="hot", vmin=0.0, vmax=diff_map.max())
-    p9 = resize_to_match(p9, left_bgr)
-    save_panel(p9, os.path.join(out_dir, "09_diff_map.png"),
+    # Panel 9 — fused SGM + Dense DA2
+    p9_fused = colorize(disp_fused, cmap="plasma")
+    p9_fused = resize_to_match(p9_fused, left_bgr)
+    fuse_label = (f"θ_conf={args.conf_threshold:.2f}"
+                  if not (args.no_align or args.no_sgm) else "no fusion")
+    save_panel(p9_fused, os.path.join(out_dir, "09_fused_sgm_dense_da2.png"),
+               f"Fused SGM + Dense DA2 [{fuse_label}]")
+
+    # Panel 9b — fused SGM + Sparse DA2
+    p9b_fused = colorize(disp_fused_sparse, cmap="plasma")
+    p9b_fused = resize_to_match(p9b_fused, left_bgr)
+    save_panel(p9b_fused, os.path.join(out_dir, "09b_fused_sgm_sparse_da2.png"),
+               f"Fused SGM + Sparse DA2 [{fuse_label}]")
+
+    # Panel 10 — diff map |Dense − Sparse|
+    p10 = colorize(diff_map, cmap="hot", vmin=0.0, vmax=diff_map.max())
+    p10 = resize_to_match(p10, left_bgr)
+    save_panel(p10, os.path.join(out_dir, "10_diff_map.png"),
                f"|Dense − Sparse|  mean={diff_map.mean():.4f}  (hot)")
 
-    # Panel 10 — 4-panel paper comparison figure
+    # Panel 11 — 4-panel paper comparison figure
     p4_normed = colorize(dense_norm, cmap="Spectral_r", vmin=0.0, vmax=1.0)
     p4_normed = resize_to_match(p4_normed, left_bgr)
 
@@ -659,13 +1027,13 @@ def run_demo(args: argparse.Namespace) -> None:
         da2_bgr        = p4_normed,
         sparse_bgr     = p7,
         aligned_bgr    = p8,
-        diff_bgr       = p9,
+        diff_bgr       = p10,
         prune_ratio    = prune_ratio,
         attn_reduction = attn_reduction,
         threshold      = args.threshold,
         scale          = scale,
         shift          = shift,
-        out_path       = os.path.join(out_dir, "10_comparison.png"),
+        out_path       = os.path.join(out_dir, "11_comparison.png"),
         aligned_is_disparity = not (args.no_align or args.no_sgm),
     )
 
@@ -679,7 +1047,9 @@ def run_demo(args: argparse.Namespace) -> None:
         ("(6) Routing Overlay",                             p6),
         (f"(7) Sparse DA2 (block={args.prune_layer}{ras_label})", p7),
         (f"(8) Aligned Disparity [{align_label}]",           p8),
-        (f"(9) |Dense−Sparse| (attn↓{100*attn_reduction:.1f}%)", p9),
+        (f"(9) Fused SGM + Dense DA2 [{fuse_label}]",       p9_fused),
+        (f"(9b) Fused SGM + Sparse DA2 [{fuse_label}]",    p9b_fused),
+        (f"(10) |Dense−Sparse| (attn↓{100*attn_reduction:.1f}%)", p10),
     ]
     build_summary_figure(summary_panels, os.path.join(out_dir, "00_summary.png"), ncol=4)
 
@@ -698,14 +1068,21 @@ def run_demo(args: argparse.Namespace) -> None:
     print(f"  Attn FLOPs ↓      : ~{100*attn_reduction:.1f}%")
     print(f"  Mean |Dense−Sparse|: {diff_map.mean():.4f}")
     if not (args.no_align or args.no_sgm):
-        print(f"  Alignment (s, t)  : ({scale:.4f}, {shift:.4f})")
+        print(f"  Dense  align (s,t): ({scale_dense:.4f}, {shift_dense:.4f})")
+        print(f"  Sparse align (s,t): ({scale:.4f}, {shift:.4f})")
         print(f"  Aligned disp range: [{disp_aligned.min():.2f}, {disp_aligned.max():.2f}] px")
+        print(f"  Fused(Dense) range: [{disp_fused.min():.2f}, {disp_fused.max():.2f}] px")
+        print(f"  Fused(Sparse)range: [{disp_fused_sparse.min():.2f}, {disp_fused_sparse.max():.2f}] px")
+        print(f"  Fusion strategy   : {args.fusion_strategy}")
+        print(f"  Fusion conf thresh: {args.conf_threshold}")
     print(f"{'='*62}")
     print(f"  Key outputs:")
     print(f"    04  — Dense DA2 baseline")
     print(f"    07  — Sparse DA2 (SGM-ViT) with re-assembly")
     print(f"    08  — Mono depth aligned to SGM disparity space (px)")
-    print(f"    10  — 4-panel paper comparison figure")
+    print(f"    09  — Fused SGM + Dense DA2 (SGM where confident, DA2 elsewhere)")
+    print(f"    09b — Fused SGM + Sparse DA2 (GAS-accelerated fusion)")
+    print(f"    11  — 4-panel paper comparison figure")
     print(f"{'='*62}\n")
 
 
@@ -730,9 +1107,14 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--threshold", type=float, default=0.65,
         help="SGM confidence threshold θ for token pruning (default: 0.65).")
     p.add_argument("--prune-layer", type=int, default=0,
-        help="ViT block index (0-based) at which pruned tokens are zeroed. "
+        help="ViT block index (0-based) at which pruning starts. "
              "0 = earliest (max FLOPs savings); higher = better quality. "
              "For ViT-S: 0..11. (default: 0)")
+    p.add_argument("--sparse-mode", default="mask",
+        choices=["zero", "mask"],
+        help="Sparse attention mode: 'mask' = GAS (Gather-Attend-Scatter, "
+             "physically excludes pruned tokens from attention), "
+             "'zero' = legacy token zeroing. (default: mask)")
     p.add_argument("--no-reassembly", action="store_true",
         help="Disable token re-assembly before the DPT decoder.")
     p.add_argument("--disparity-range", type=int, default=128)
@@ -740,6 +1122,19 @@ def parse_args() -> argparse.Namespace:
         help="Gaussian σ for SGM confidence map smoothing.")
     p.add_argument("--no-align", action="store_true",
         help="Skip disparity-space alignment of monocular depth.")
+    p.add_argument("--conf-threshold", type=float, default=0.5,
+        help="Confidence threshold for depth alignment and SGM/DA2 fusion "
+             "blend boundary (default: 0.5).")
+    p.add_argument("--fusion-strategy", default="soft_blend", #choices=hard_switch
+        choices=list(FUSION_STRATEGIES.keys()),
+        help="Fusion strategy for SGM + DA2 combination (default: soft_blend).")
+    p.add_argument("--outlier-threshold", type=float, default=10.0,
+        help="Disparity disagreement threshold for outlier_aware fusion "
+             "(default: 10.0 px).")
+    p.add_argument("--theta-low", type=float, default=0.3,
+        help="Lower confidence threshold for two_threshold fusion (default: 0.3).")
+    p.add_argument("--theta-high", type=float, default=0.7,
+        help="Upper confidence threshold for two_threshold fusion (default: 0.7).")
     p.add_argument("--out-dir",
         default=os.path.join(_SCRIPT_DIR, "results", "demo"))
     p.add_argument("--no-sgm", action="store_true",

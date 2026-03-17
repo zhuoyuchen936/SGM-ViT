@@ -39,6 +39,7 @@ from tqdm import tqdm
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from core.token_router import SGMConfidenceTokenRouter
+from core.eval_utils import compute_token_grid_size
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -47,7 +48,7 @@ from core.token_router import SGMConfidenceTokenRouter
 # DepthAnythingV2 ViT-B default parameters
 IMG_SIZE        = 518
 PATCH_SIZE      = 14
-TOKEN_GRID_SIZE = IMG_SIZE // PATCH_SIZE   # 37
+TOKEN_GRID_SIZE = compute_token_grid_size(IMG_SIZE, PATCH_SIZE)  # 37
 N_TOKENS        = TOKEN_GRID_SIZE ** 2     # 1369
 EMBED_DIM       = 768
 NUM_HEADS       = 12

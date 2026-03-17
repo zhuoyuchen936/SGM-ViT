@@ -17,21 +17,37 @@ run_sgm_with_confidence(left_path, right_path, **kwargs)
     → confidence_map : (H, W) float32  — per-pixel reliability in [0, 1]
     → disparity_raw  : (H, W) float32  — disparity in pixels
 
-Confidence Map Derivation
--------------------------
-After computing left and right disparity maps we run a left-right
-consistency check (left_right_check_window).  A pixel is considered
-*reliable* (high confidence) if it passes the check — i.e., it is
-neither an occlusion nor a mismatch.  The raw binary reliability mask
-is optionally smoothed with a Gaussian so that token-level pooling
-produces gradual confidence gradients rather than hard edges.
+Confidence Map Derivation  (PKRN + LR-check masking)
+------------------------------------------------------
+Confidence is derived from the aggregated left cost volume using the
+**Peak Ratio Naive (PKRN)** metric — a classical, hardware-friendly
+stereo confidence measure:
+
+    C = 1 − BestCost / SecondBestCost
+
+where *SecondBestCost* is the minimum cost found at least ``pkrn_min_dist``
+disparity steps away from the winner.  Intuition:
+
+* If the second-best cost is close to the best (PKRN ≈ 0) the matching
+  is *ambiguous* → low confidence.
+* If the second-best cost is much larger (PKRN ≈ 1) the match is
+  *unambiguous* → high confidence.
+
+After computing PKRN we zero out pixels flagged as holes by the
+left-right consistency check (occlusions and mismatches), because these
+locations have no geometrically valid disparity regardless of cost-volume
+shape.  The combined map is optionally smoothed with a Gaussian so that
+token-level pooling produces gradual confidence gradients.
 
 Hardware Note
 -------------
-On the FPGA the same logic is implemented as a shift-register comparator
-that runs one clock cycle after the disparity winner-take-all selection.
-The confidence bit per pixel costs 1 bit of storage and maps directly to
-the token router's threshold comparator.
+PKRN is computed in a *single forward pass* over the left aggregated cost
+volume, without needing the right disparity map.  This maps to a simple
+comparator array that tracks the running minimum and second-minimum along
+the disparity search direction — a natural fit for an FPGA DSP column.
+The confidence value requires only one arithmetic division per pixel after
+the WTA stage, costing approximately one multiplier and one DSP slice per
+processing element.
 
 Author : [Your Name]
 Venue  : ICCAD 2025 (submission)
@@ -69,6 +85,71 @@ from SGM.SGM import (
 
 
 # ---------------------------------------------------------------------------
+# Private helpers
+# ---------------------------------------------------------------------------
+
+def _pkrn(cost_vol: np.ndarray, min_dist: int = 1) -> np.ndarray:
+    """
+    Peak Ratio Naive (PKRN) confidence from an aggregated SGM cost volume.
+
+    PKRN is a classical, hardware-friendly stereo confidence metric.
+    For each pixel the winner disparity ``d*`` is identified (lowest cost).
+    The *second-best* cost is then the minimum cost over all disparities
+    that are at least ``min_dist`` steps away from ``d*``:
+
+        C = 1 − cost[d*] / cost[d_2nd]
+
+    Interpretation
+    --------------
+    * C close to 0  →  best and second-best costs are similar  →  match is
+                       ambiguous  →  *low confidence*.
+    * C close to 1  →  second-best cost is much larger  →  match is
+                       unambiguous  →  *high confidence*.
+
+    Parameters
+    ----------
+    cost_vol : (H, W, D) float array
+        Aggregated SGM cost volume.  Lower values indicate better matches.
+        The disparity dimension is the last axis.
+    min_dist : int
+        Minimum disparity distance (exclusive) from the winner before a
+        cost value is eligible as the second-best candidate.  A value of 1
+        (default) excludes only the immediately adjacent disparities, which
+        avoids the interpolation peak but is permissive.  Increase to 2-3
+        for stricter uniqueness.
+
+    Returns
+    -------
+    conf : (H, W) float32
+        PKRN confidence in [0, 1].  Pixels where no valid second-best
+        exists (e.g., D ≤ 2·min_dist) are assigned 0.
+    """
+    H, W, D = cost_vol.shape
+
+    # Winner disparity index and its cost — both (H, W)
+    best_idx  = cost_vol.argmin(axis=2).astype(np.int32)   # (H, W)
+    best_cost = cost_vol.min(axis=2)                        # (H, W)
+
+    # Build distance tensor |d - d*| for every candidate disparity d.
+    # Shape broadcast: (1, 1, D) - (H, W, 1) → (H, W, D)
+    d_range = np.arange(D, dtype=np.int32)
+    dist = np.abs(d_range[None, None, :] - best_idx[:, :, None])  # (H, W, D)
+
+    # Mask out the neighbourhood of the winner; replace with +inf
+    masked_cost = np.where(dist > min_dist, cost_vol, np.inf)
+
+    # Second-best cost: minimum over the remaining candidates
+    second_best_cost = masked_cost.min(axis=2)              # (H, W)
+
+    # Compute PKRN where a valid second-best exists and second_best > 0
+    conf = np.zeros((H, W), dtype=np.float32)
+    valid = np.isfinite(second_best_cost) & (second_best_cost > 0)
+    conf[valid] = 1.0 - best_cost[valid] / second_best_cost[valid]
+
+    return conf.clip(0.0, 1.0)
+
+
+# ---------------------------------------------------------------------------
 # Public interface
 # ---------------------------------------------------------------------------
 
@@ -82,6 +163,7 @@ def run_sgm_with_confidence(
     LARGE_PENALTY: float = 1.0,
     SMALL_PENALTY: float = 0.3,
     smooth_sigma: float = 5.0,
+    pkrn_min_dist: int = 1,
     verbose: bool = True,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
@@ -106,9 +188,13 @@ def run_sgm_with_confidence(
     SMALL_PENALTY : float
         SGM penalty P1 for 1-pixel disparity changes.
     smooth_sigma : float
-        Standard deviation of the Gaussian used to smooth the binary
-        L-R consistency mask into a soft confidence map.  Set to 0 to
-        return the hard binary mask.
+        Standard deviation of the Gaussian used to smooth the PKRN
+        confidence map.  Set to 0 to return the unsmoothed map.
+    pkrn_min_dist : int
+        Minimum disparity distance from the winning disparity before a
+        cost value qualifies as the PKRN second-best.  Default: 1 (exclude
+        only the immediately adjacent bin).  Increase to 2–3 for stricter
+        uniqueness requirements.
     verbose : bool
         Print timing and progress information.
 
@@ -118,9 +204,10 @@ def run_sgm_with_confidence(
         Filled disparity map normalised to [0, 1] (0 = near, 1 = far
         for typical rectified cameras — verify for your calibration).
     confidence_map : ndarray, shape (H, W), dtype float32
-        Per-pixel SGM reliability score in [0, 1].
-        1.0  →  pixel passes L-R consistency check (SGM is reliable here).
-        0.0  →  pixel is an occlusion or mismatch (uncertain).
+        Per-pixel SGM reliability score in [0, 1], derived from PKRN
+        on the aggregated left cost volume, masked by the LR-check:
+        1.0  →  unambiguous cost-volume peak, passes LR-check.
+        0.0  →  ambiguous match OR occlusion/mismatch flagged by LR-check.
     disparity_raw : ndarray, shape (H, W), dtype float32
         Raw filled disparity in pixels before normalisation.
     """
@@ -194,16 +281,29 @@ def run_sgm_with_confidence(
     disp_R = compute_disparity(agg_R, H, W, disparity_range, idx_R)
 
     # ------------------------------------------------------------------
-    # Stage 5: Left-right consistency check → confidence map
+    # Stage 4b: PKRN confidence from the aggregated left cost volume
     # ------------------------------------------------------------------
-    # occlusion : True  = pixel is behind an occluding surface (low conf)
-    # mismatches: True  = L-R disparity disagreement     (low conf)
+    # Computed immediately after WTA so agg_L is still in memory.
+    # agg_L shape: (H, W, disparity_range)  — lower cost = better match.
+    # _pkrn() is a single NumPy pass over the disparity axis; no right
+    # disparity map is required (FPGA-friendly datapath).
+    if verbose:
+        print("[SGM] Computing PKRN confidence ...")
+    pkrn_conf = _pkrn(agg_L, min_dist=pkrn_min_dist)  # (H, W) ∈ [0, 1]
+
+    # ------------------------------------------------------------------
+    # Stage 5: Left-right consistency check → hole mask
+    # ------------------------------------------------------------------
+    # occlusion : True  = pixel is behind an occluding surface (no valid match)
+    # mismatches: True  = L-R disparity disagreement            (unreliable)
+    # These pixels receive confidence = 0 regardless of PKRN value.
     if verbose:
         print("[SGM] Left-right consistency check ...")
     occlusion, mismatches, _ = left_right_check_window(disp_L, disp_R, 5)
 
-    # Binary reliability mask: 1.0 where SGM is trustworthy
-    reliable = (~occlusion & ~mismatches).astype(np.float32)
+    # Zero PKRN at LR-check holes → combined confidence
+    hole_mask = occlusion | mismatches                              # True = bad pixel
+    raw_conf  = pkrn_conf * (~hole_mask).astype(np.float32)       # (H, W) ∈ [0, 1]
 
     # Stage 6: Hole filling on the left disparity map
     if verbose:
@@ -214,14 +314,13 @@ def run_sgm_with_confidence(
     # ------------------------------------------------------------------
     # Stage 7: Build smooth confidence map
     # ------------------------------------------------------------------
-    # A hard binary mask creates token-grid artefacts after pooling.
-    # Convolving with a Gaussian spreads the confidence signal so that
-    # partially-reliable token regions get intermediate confidence values,
-    # giving the threshold comparator a smooth operating point.
+    # Gaussian smoothing converts the per-pixel PKRN signal into gradual
+    # token-level gradients, giving the threshold comparator a smoother
+    # operating point than a hard binary mask.
     if smooth_sigma > 0:
-        confidence_map = gaussian_filter(reliable, sigma=smooth_sigma).clip(0.0, 1.0)
+        confidence_map = gaussian_filter(raw_conf, sigma=smooth_sigma).clip(0.0, 1.0)
     else:
-        confidence_map = reliable.copy()
+        confidence_map = raw_conf
 
     # ------------------------------------------------------------------
     # Stage 8: Normalise disparity to [0, 1]
@@ -230,8 +329,10 @@ def run_sgm_with_confidence(
     disparity_norm = (disp_filled / d_max).astype(np.float32) if d_max > 0 else disp_filled
 
     if verbose:
-        reliable_pct = 100.0 * reliable.mean()
-        print(f"[SGM] Done.  Reliable pixels: {reliable_pct:.1f}%  "
+        valid_pct = 100.0 * (~hole_mask).mean()
+        pkrn_mean = pkrn_conf[~hole_mask].mean() if (~hole_mask).any() else 0.0
+        print(f"[SGM] Done.  LR-check pass: {valid_pct:.1f}%  "
+              f"Mean PKRN (valid): {pkrn_mean:.3f}  "
               f"Max disparity: {d_max:.1f} px")
 
     return disparity_norm, confidence_map, disp_filled
@@ -244,8 +345,9 @@ def confidence_to_token_grid(
     """
     Average-pool the per-pixel confidence map to the ViT token grid.
 
-    This mirrors the F.adaptive_avg_pool2d operation inside
-    SGMConfidenceTokenRouter for quick NumPy-only visualisation.
+    Delegates to ``core.eval_utils.pool_confidence`` which uses
+    ``F.adaptive_avg_pool2d`` — the same operation used inside
+    ``SGMConfidenceTokenRouter`` for exact consistency.
 
     Parameters
     ----------
@@ -256,19 +358,5 @@ def confidence_to_token_grid(
     -------
     token_conf : (token_grid_size, token_grid_size) float32
     """
-    H, W = confidence_map.shape
-    ph = H // token_grid_size  # patch height
-    pw = W // token_grid_size  # patch width
-    if ph == 0 or pw == 0:
-        # Fall-back: bilinear resize
-        return cv2.resize(confidence_map, (token_grid_size, token_grid_size),
-                          interpolation=cv2.INTER_AREA)
-
-    # Crop to exact multiple, then reshape and average
-    H_crop = ph * token_grid_size
-    W_crop = pw * token_grid_size
-    cropped = confidence_map[:H_crop, :W_crop]
-    token_conf = (cropped
-                  .reshape(token_grid_size, ph, token_grid_size, pw)
-                  .mean(axis=(1, 3)))
-    return token_conf.astype(np.float32)
+    from .eval_utils import pool_confidence
+    return pool_confidence(confidence_map, token_grid_size)

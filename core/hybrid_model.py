@@ -239,7 +239,6 @@ class SGMViTHybridModel(nn.Module):
 
         for b in range(B):
             k_idx = keep_idx[b]
-            p_idx = keep_idx[b]  # placeholder — will use prune_idx properly
 
             if k_idx.numel() == 0:
                 # All tokens pruned (degenerate case): keep full_tokens as-is.
