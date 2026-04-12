@@ -1,0 +1,35 @@
+[project]
+name = "sgm-vit"
+version = "0.1.0"
+description = "SGM-ViT: FPGA-accelerated monocular depth estimation (ICCAD 2025)"
+requires-python = ">=3.9"
+dependencies = [
+    "torch>=2.0.0",
+    "torchvision>=0.15.0",
+    "numpy>=1.24.0",
+    "opencv-python>=4.7.0",
+    "matplotlib>=3.7.0",
+    "tqdm>=4.65.0",
+    "einops>=0.6.1",
+    "thop>=0.1.1",
+    "scipy",
+]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["core*", "scripts*"]
+
+# --- Linting (ruff) ---
+[tool.ruff]
+target-version = "py39"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+ignore = ["E501"]  # don't enforce line length — research code has long formulas
+
+[tool.ruff.lint.isort]
+known-first-party = ["core", "scripts"]

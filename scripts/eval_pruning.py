@@ -32,36 +32,49 @@ import argparse
 import csv
 import logging
 import os
-import sys
 import time
 
 import cv2
 import numpy as np
-from scipy.ndimage import gaussian_filter
-from tqdm import tqdm
 import torch
+from tqdm import tqdm
 
 # ---------------------------------------------------------------------------
-# Path setup — importable from any working directory
+# Path setup
 # ---------------------------------------------------------------------------
-_SCRIPT_DIR  = os.path.dirname(os.path.abspath(__file__))
-_PROJECT_DIR = os.path.dirname(_SCRIPT_DIR)
-_DA2_DIR     = os.path.join(_PROJECT_DIR, "Depth-Anything-V2")
-sys.path.insert(0, _PROJECT_DIR)
-sys.path.insert(0, _DA2_DIR)
-
-from demo import (
-    load_da2_model, run_masked_sparse_da2,
-    align_depth_to_sgm, fuse_sgm_da2,
-    DA2_MODEL_CONFIGS, TOKEN_GRID_SIZE, EMBED_DIM_MAP,
-)
-from scripts.eval_kitti import (
-    build_sample_list, read_pfm, read_kitti_gt,
-    load_pkrn_confidence, compute_metrics, aggregate,
+import core._paths  # noqa: F401  — ensures DA2 is on sys.path
+from core.eval_utils import compute_attn_reduction, pareto_frontier
+from core.fusion import fuse_sgm_da2
+from core.pipeline import (
+    DA2_MODEL_CONFIGS,
+    EMBED_DIM_MAP,
+    TOKEN_GRID_SIZE,
+    align_depth_to_sgm,
+    load_da2_model,
+    run_masked_sparse_da2,
 )
 from core.token_router import SGMConfidenceTokenRouter
-from core.eval_utils import compute_attn_reduction, pareto_frontier
-
+from scripts.eval_kitti import (
+    aggregate,
+    build_sample_list,
+    compute_metrics,
+    load_protocol_confidence_maps,
+    read_kitti_gt,
+    read_pfm,
+)
+from scripts.common_config import (
+    DEFAULT_ALIGN_CONF_THRESHOLD,
+    DEFAULT_CONF_SIGMA,
+    DEFAULT_DISPARITY_RANGE,
+    DEFAULT_ENCODER,
+    DEFAULT_KITTI_ROOT,
+    DEFAULT_MAX_SAMPLES,
+    DEFAULT_PKRN_MIN_DIST,
+    DEFAULT_PRUNE_LAYER,
+    DEFAULT_PRUNE_THRESHOLD,
+    DEFAULT_WEIGHTS,
+    default_results_dir,
+)
 
 # ---------------------------------------------------------------------------
 # Main evaluation
@@ -163,17 +176,12 @@ def evaluate_pruning(args: argparse.Namespace) -> None:
         sgm_disp          = read_pfm(s['sgm_pfm'])
 
         # Alignment confidence (binary LR-check, Gaussian-smoothed)
-        mismatch  = np.load(s['mismatch']).astype(bool)
-        occlusion = np.load(s['occlusion']).astype(bool)
-        conf_align = (~(mismatch | occlusion)).astype(np.float32)
-        conf_align = gaussian_filter(conf_align, sigma=args.conf_sigma)
-
-        # Routing confidence (PKRN)
-        if os.path.exists(s.get('pkrn_cache', '')) or os.path.exists(s.get('right', '')):
-            conf_route = load_pkrn_confidence(
-                s, args.disparity_range, args.pkrn_min_dist, args.conf_sigma)
-        else:
-            conf_route = conf_align
+        conf_align, conf_route = load_protocol_confidence_maps(
+            s,
+            disparity_range=args.disparity_range,
+            pkrn_min_dist=args.pkrn_min_dist,
+            smooth_sigma=args.conf_sigma,
+        )
 
         # SGM-valid mask
         sgm_for_mask = sgm_disp
@@ -212,9 +220,9 @@ def evaluate_pruning(args: argparse.Namespace) -> None:
             dense_records_sv[k].append(dense_metrics_sv)
 
         # ---- Fused SGM + Dense DA2 (ONCE) — baseline --------------------
-        conf_for_fuse = conf_align
-        if conf_align.shape != gt_disp.shape:
-            conf_for_fuse = cv2.resize(conf_align,
+        conf_for_fuse = conf_route
+        if conf_route.shape != gt_disp.shape:
+            conf_for_fuse = cv2.resize(conf_route,
                 (gt_disp.shape[1], gt_disp.shape[0]),
                 interpolation=cv2.INTER_LINEAR)
 
@@ -533,17 +541,16 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description='SGM-ViT progressive pruning ablation on KITTI.'
     )
-    p.add_argument('--kitti-root', default='/nfs/usrhome/pdongaa/dataczy/kitti',
+    p.add_argument('--kitti-root', default=DEFAULT_KITTI_ROOT,
         help='KITTI dataset root (contains training/ and kitti2012/).')
     p.add_argument('--weights',
-        default=os.path.join(_PROJECT_DIR, 'Depth-Anything-V2', 'checkpoints',
-                             'depth_anything_v2_vits.pth'),
+        default=DEFAULT_WEIGHTS,
         help='Path to DepthAnythingV2 checkpoint.')
-    p.add_argument('--encoder', default='vits',
+    p.add_argument('--encoder', default=DEFAULT_ENCODER,
         choices=list(DA2_MODEL_CONFIGS.keys()))
     p.add_argument('--prune-layers', default='0,2,4,6,8,10',
         help='Comma-separated prune_layer values to sweep (default: 0,2,4,6,8,10).')
-    p.add_argument('--threshold', type=float, default=0.65,
+    p.add_argument('--threshold', type=float, default=DEFAULT_PRUNE_THRESHOLD,
         help='Token pruning confidence threshold θ (used when not --sweep-threshold).')
     p.add_argument('--sweep-threshold', action='store_true',
         help='Also sweep threshold values (cross-product with prune_layers).')
@@ -551,18 +558,18 @@ def parse_args() -> argparse.Namespace:
         help='Comma-separated threshold values for --sweep-threshold mode.')
     p.add_argument('--no-reassembly', action='store_true',
         help='Disable token re-assembly before the DPT decoder.')
-    p.add_argument('--conf-threshold', type=float, default=0.7,
+    p.add_argument('--conf-threshold', type=float, default=DEFAULT_ALIGN_CONF_THRESHOLD,
         help='Minimum confidence to use a pixel for depth alignment.')
-    p.add_argument('--conf-sigma', type=float, default=5.0,
+    p.add_argument('--conf-sigma', type=float, default=DEFAULT_CONF_SIGMA,
         help='Gaussian σ for smoothing the PKRN confidence map.')
-    p.add_argument('--disparity-range', type=int, default=128,
+    p.add_argument('--disparity-range', type=int, default=DEFAULT_DISPARITY_RANGE,
         help='SGM disparity search range (for PKRN cache miss).')
-    p.add_argument('--pkrn-min-dist', type=int, default=1,
+    p.add_argument('--pkrn-min-dist', type=int, default=DEFAULT_PKRN_MIN_DIST,
         help='Minimum disparity gap from winner for PKRN second-best search.')
-    p.add_argument('--max-samples', type=int, default=0,
+    p.add_argument('--max-samples', type=int, default=DEFAULT_MAX_SAMPLES,
         help='Evaluate only the first N samples (0 = all).')
     p.add_argument('--out-dir',
-        default=os.path.join(_PROJECT_DIR, 'results', 'eval_pruning'),
+        default=default_results_dir('eval_pruning'),
         help='Directory to save results and log.')
     p.add_argument('--cpu', action='store_true',
         help='Force CPU inference.')

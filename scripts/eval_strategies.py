@@ -43,39 +43,47 @@ import csv
 import logging
 import os
 import sys
-import time
 
 import cv2
 import numpy as np
+import torch
 from scipy.ndimage import gaussian_filter
 from tqdm import tqdm
-import torch
 
 # ---------------------------------------------------------------------------
 # Path setup
 # ---------------------------------------------------------------------------
-_SCRIPT_DIR  = os.path.dirname(os.path.abspath(__file__))
-_PROJECT_DIR = os.path.dirname(_SCRIPT_DIR)
-_DA2_DIR     = os.path.join(_PROJECT_DIR, "Depth-Anything-V2")
-sys.path.insert(0, _PROJECT_DIR)
-sys.path.insert(0, _DA2_DIR)
+_PROJECT_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
+if _PROJECT_DIR not in sys.path:
+    sys.path.insert(0, _PROJECT_DIR)
 
-from demo import (
-    load_da2_model, run_masked_sparse_da2,
-    align_depth_to_sgm, fuse_sgm_da2,
-    DA2_MODEL_CONFIGS, TOKEN_GRID_SIZE, EMBED_DIM_MAP,
+import core._paths  # noqa: F401  — ensures DA2 is on sys.path
+from core.eval_utils import compute_attn_reduction, pareto_frontier, pool_confidence
+from core.fusion import fuse_sgm_da2
+from core.pipeline import (
+    DA2_MODEL_CONFIGS,
+    EMBED_DIM_MAP,
+    TOKEN_GRID_SIZE,
+    align_depth_to_sgm,
+    load_da2_model,
+    run_masked_sparse_da2,
 )
-from scripts.eval_kitti import (
-    build_sample_list, read_pfm, read_kitti_gt,
-    load_pkrn_confidence, compute_metrics, aggregate,
+from core.pruning_strategies import (
+    cls_attention_mask,
+    hybrid_mask,
+    random_prune_mask,
+    spatial_checkerboard_mask,
+    topk_confidence_mask,
 )
 from core.token_router import SGMConfidenceTokenRouter
-from core.eval_utils import compute_attn_reduction, pareto_frontier, pool_confidence
-from core.pruning_strategies import (
-    random_prune_mask, topk_confidence_mask, inverse_confidence_mask,
-    spatial_checkerboard_mask, cls_attention_mask, hybrid_mask,
+from scripts.eval_kitti import (
+    aggregate,
+    build_sample_list,
+    compute_metrics,
+    load_pkrn_confidence,
+    read_kitti_gt,
+    read_pfm,
 )
-
 
 # ---------------------------------------------------------------------------
 # All strategy names

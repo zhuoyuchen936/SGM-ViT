@@ -1,26 +1,63 @@
-# =============================================================================
-# SGM-ViT: ICCAD Research Project .gitignore
-# Covers: Python, C/C++, FPGA (Vivado/Vitis), model weights, datasets
-# =============================================================================
+# SGM-ViT repository hygiene
 
-# -----------------------------------------------------------------------------
-# External repositories (large, clone separately per README)
-# -----------------------------------------------------------------------------
-# DepthAnythingV2 official repo — clone with:
-#   git clone https://github.com/DepthAnything/Depth-Anything-V2
+# External dependencies and model weights
 Depth-Anything-V2/
 depth_anything_v2/
+checkpoints/
+pretrained/
+artifacts/
+*.pth
+*.pt
+*.ckpt
+*.bin
+*.safetensors
+*.h5
+*.hdf5
+*.pkl
+*.pickle
 
-# -----------------------------------------------------------------------------
+# Local datasets and caches
+data/
+KITTI/
+NYUv2/
+MiDaS/
+ETH3D/
+ScanNet/
+*.npz
+*.npy
+*.mat
+*.lmdb
+*.db
+
+# Experiment outputs
+results/
+outputs/
+runs/
+wandb/
+tensorboard_logs/
+experiments/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.log
+
+# Local tooling and agent metadata
+.claude/
+CLAUDE.md
+scripts/CLAUDE.md
+claude_todo.md
+
+# Third-party reference material kept only locally
+paper/ref/
+hardware/ViTCoD_ref/
+
 # Python
-# -----------------------------------------------------------------------------
 __pycache__/
 *.py[cod]
-*$py.class
 *.so
 .Python
 build/
-develop-eggs/
 dist/
 downloads/
 eggs/
@@ -34,12 +71,7 @@ wheels/
 pip-wheel-metadata/
 share/python-wheels/
 *.egg-info/
-.installed.cfg
 *.egg
-MANIFEST
-*.pyc
-*.pyo
-*.pyd
 .pytest_cache/
 .mypy_cache/
 .dmypy.json
@@ -47,56 +79,22 @@ dmypy.json
 .tox/
 .nox/
 .hypothesis/
-htmlcov/
-.coverage
-.coverage.*
-coverage.xml
-*.cover
-*.py,cover
-nosetests.xml
-pip-log.txt
-pip-delete-this-directory.txt
-*.log
-local_settings.py
-db.sqlite3
-db.sqlite3-journal
-instance/
-.webassets-cache
-.scrapy
-docs/_build/
-.pybuilder/
-target/
-.ipynb_checkpoints
-profile_default/
-ipython_config.py
+.ipynb_checkpoints/
 .env
-.venv
+.venv/
 env/
 venv/
 ENV/
-env.bak/
-venv.bak/
-.spyderproject.db
-.spyproject
-.ropeproject
-/site
-.pdm.toml
 __pypackages__/
-celerybeat-schedule
-celerybeat.pid
-*.sage.py
 Pipfile.lock
 
-# -----------------------------------------------------------------------------
-# C / C++
-# -----------------------------------------------------------------------------
+# FPGA / build artifacts
 *.o
 *.a
 *.out
 *.exe
 *.dll
 *.lib
-*.so.*
 *.obj
 *.elf
 *.d
@@ -109,50 +107,6 @@ CMakeCache.txt
 cmake_install.cmake
 Makefile
 compile_commands.json
-
-# -----------------------------------------------------------------------------
-# Deep Learning Model Weights & Checkpoints
-# -----------------------------------------------------------------------------
-*.pth
-*.pt
-*.ckpt
-*.bin
-*.safetensors
-*.h5
-*.hdf5
-*.pkl
-*.pickle
-checkpoints/
-pretrained/
-
-# -----------------------------------------------------------------------------
-# Large Datasets & Data Files
-# -----------------------------------------------------------------------------
-data/weights/
-data/datasets/
-data/raw/
-data/processed/
-data/cache/
-*.csv
-*.tsv
-*.json.gz
-*.npz
-*.npy
-*.mat
-*.lmdb
-*.db
-
-# Specific dataset directories (KITTI, NYU, etc.)
-KITTI/
-NYUv2/
-MiDaS/
-ETH3D/
-ScanNet/
-
-# -----------------------------------------------------------------------------
-# FPGA: Xilinx Vivado / Vitis HLS
-# -----------------------------------------------------------------------------
-# Vivado project files (generated)
 *.jou
 *.str
 *.pb
@@ -168,9 +122,6 @@ ScanNet/
 *.compile_summary
 *.run_summary
 .Xil/
-vivado_pid*.str
-vivado*.jou
-vivado*.log
 hls_project/
 solution*/
 .autopilot/
@@ -178,8 +129,6 @@ syn/
 sim/
 impl/
 export/
-
-# Vitis / SDSoC
 _vss_project/
 *.vitis_launch
 SD_card/
@@ -192,16 +141,12 @@ xrt.ini
 xrt/
 vadd_hw/
 package_output/
-
-# Modelsim / QuestaSim
 transcript
 vsim.wlf
 modelsim.ini
 work/
 
-# -----------------------------------------------------------------------------
-# Editors & IDEs
-# -----------------------------------------------------------------------------
+# Editor files
 .vscode/
 .idea/
 *.swp
@@ -209,22 +154,3 @@ work/
 *~
 .DS_Store
 Thumbs.db
-*.sublime-project
-*.sublime-workspace
-
-# -----------------------------------------------------------------------------
-# Jupyter Notebooks (outputs only — keep .ipynb files, ignore checkpoints)
-# -----------------------------------------------------------------------------
-.ipynb_checkpoints/
-
-# -----------------------------------------------------------------------------
-# Outputs & Experiments
-# -----------------------------------------------------------------------------
-outputs/
-runs/
-wandb/
-tensorboard_logs/
-experiments/
-results/*.png
-results/*.jpg
-results/*.npy

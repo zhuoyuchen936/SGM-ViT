@@ -24,22 +24,18 @@ Requirements
 from __future__ import annotations
 
 import argparse
-import time
-import math
 import os
-import sys
-from typing import List, Tuple
+import time
+from typing import List
 
-import torch
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
+import torch
 from tqdm import tqdm
 
-# Allow running from the project root without installing the package.
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
-from core.token_router import SGMConfidenceTokenRouter
+import core._paths  # noqa: F401  — ensures DA2 is on sys.path
 from core.eval_utils import compute_token_grid_size
+from core.token_router import SGMConfidenceTokenRouter
 
 # ---------------------------------------------------------------------------
 # Configuration

@@ -1,0 +1,31 @@
+# Workload Configuration for Depth Anything V2 (ViT-S)
+
+model:
+  name: DepthAnythingV2-ViTS
+  encoder:
+    type: DINOv2-ViT-S
+    embed_dim: 384
+    num_heads: 6
+    depth: 12
+    mlp_ratio: 4.0
+    patch_size: 14
+  decoder:
+    type: DPT
+    features: 64
+    out_channels: 1
+  adcu:
+    baseline_m: 0.54
+    focal_length_px: 721.0
+
+input:
+  resolutions:
+    - [518, 518]    # Default
+    - [480, 640]    # VGA
+    - [720, 1280]   # HD
+    - [1080, 1920]  # FHD
+
+quantization:
+  weight_bits: 8
+  activation_bits: 8
+  mixed_precision: true
+  mlp_weight_bits: 4  # For first 8 blocks

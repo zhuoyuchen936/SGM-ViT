@@ -55,34 +55,28 @@ Venue  : ICCAD 2025 (submission)
 
 from __future__ import annotations
 
-import os
-import sys
 import time
 
 import cv2
 import numpy as np
-from scipy.ndimage import gaussian_filter, median_filter
+from scipy.ndimage import gaussian_filter
 
 # ---------------------------------------------------------------------------
-# Path setup — ensure both project root and SGM package are importable
-# regardless of the caller's CWD.
+# Path setup
 # ---------------------------------------------------------------------------
-_PROJECT_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
-if _PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, _PROJECT_ROOT)
+import core._paths  # noqa: F401  — ensures project root + DA2 on sys.path
 
 # Import the Numba-JIT kernels from the existing SGM engine.
 # First call will trigger Numba compilation (~30-90 s on first run).
 from SGM.SGM import (
-    compute_gradient,
-    calculate_pixel_cost_all,
     aggregate_costs_0,
     aggregate_costs_135,
+    calculate_pixel_cost_all,
     compute_disparity,
-    left_right_check_window,
+    compute_gradient,
     filling2,
+    left_right_check_window,
 )
-
 
 # ---------------------------------------------------------------------------
 # Private helpers
@@ -165,7 +159,8 @@ def run_sgm_with_confidence(
     smooth_sigma: float = 5.0,
     pkrn_min_dist: int = 1,
     verbose: bool = True,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    return_debug: bool = False,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, np.ndarray]]:
     """
     Run the full SGM stereo-matching pipeline and return arrays.
 
@@ -197,6 +192,9 @@ def run_sgm_with_confidence(
         uniqueness requirements.
     verbose : bool
         Print timing and progress information.
+    return_debug : bool
+        When True, also return a dictionary with intermediate SGM arrays
+        needed for exporting ``sgm_hole`` assets.
 
     Returns
     -------
@@ -214,7 +212,7 @@ def run_sgm_with_confidence(
     assert disparity_range % 4 == 0, "disparity_range must be a multiple of 4."
 
     if verbose:
-        print(f"[SGM] Loading images ...")
+        print("[SGM] Loading images ...")
     left_gray  = cv2.imread(left_path,  cv2.IMREAD_GRAYSCALE)
     right_gray = cv2.imread(right_path, cv2.IMREAD_GRAYSCALE)
     if left_gray is None or right_gray is None:
@@ -335,7 +333,19 @@ def run_sgm_with_confidence(
               f"Mean PKRN (valid): {pkrn_mean:.3f}  "
               f"Max disparity: {d_max:.1f} px")
 
-    return disparity_norm, confidence_map, disp_filled
+    if not return_debug:
+        return disparity_norm, confidence_map, disp_filled
+
+    debug = {
+        "disp_left": disp_L.astype(np.float32),
+        "disp_right": disp_R.astype(np.float32),
+        "disp_filled": disp_filled.astype(np.float32),
+        "occlusion": occlusion.astype(bool),
+        "mismatches": mismatches.astype(bool),
+        "pkrn_raw": pkrn_conf.astype(np.float32),
+        "confidence_raw": raw_conf.astype(np.float32),
+    }
+    return disparity_norm, confidence_map, disp_filled, debug
 
 
 def confidence_to_token_grid(

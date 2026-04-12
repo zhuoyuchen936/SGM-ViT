@@ -20,12 +20,11 @@ Strategies
 
 from __future__ import annotations
 
-import torch
-import numpy as np
 import cv2
+import numpy as np
+import torch
 
 from .eval_utils import pool_confidence as _pool_confidence
-
 
 # ---------------------------------------------------------------------------
 # 1. Random Pruning (control baseline)
@@ -296,11 +295,19 @@ def hybrid_mask(
     else:
         conf_norm = torch.zeros_like(conf_flat)
 
-    # Handle shape mismatch: cls_attn_scores may differ from N (non-square)
+    # Handle shape mismatch: cls_attn_scores may differ from N (non-square images)
     cls_scores = cls_attn_scores.float()
     if cls_scores.shape[0] != N:
-        G = int(round(cls_scores.shape[0] ** 0.5))
-        cls_2d = cls_scores.reshape(G, G).numpy()
+        N_actual = cls_scores.shape[0]
+        # Use token_grid_size as the height (518px / 14px-patch = 37 for the
+        # short dimension), derive width from the total count.
+        H_actual = token_grid_size
+        W_actual = N_actual // H_actual
+        if H_actual * W_actual != N_actual:
+            # Fallback: try integer square root
+            H_actual = int(N_actual ** 0.5)
+            W_actual = N_actual // H_actual
+        cls_2d = cls_scores.reshape(H_actual, W_actual).numpy()
         cls_2d = cv2.resize(cls_2d, (token_grid_size, token_grid_size),
                             interpolation=cv2.INTER_LINEAR)
         cls_scores = torch.from_numpy(cls_2d.reshape(-1))

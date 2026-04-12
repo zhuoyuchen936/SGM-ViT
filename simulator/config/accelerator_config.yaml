@@ -1,0 +1,41 @@
+# EdgeStereoDAv2 Accelerator Configuration
+# Default: 28nm process
+
+accelerator:
+  name: EdgeStereoDAv2
+  process_node_nm: 28
+  clock_freq_mhz: 500
+
+pe_array:
+  rows: 32
+  cols: 32
+  mac_bitwidth: 8
+  acc_bitwidth: 32
+  dataflow: hybrid  # WS for matmul, OS for conv
+
+memory:
+  l0_reg_bytes_per_pe: 512
+  l1_sram_bytes_per_engine: 65536  # 64 KB
+  l2_shared_sram_bytes: 524288     # 512 KB
+  l2_num_banks: 32
+  l2_bank_width_bytes: 8
+  dram_bandwidth_gbps: 16.0
+  dram_capacity_gb: 2
+
+engines:
+  vfe:
+    softmax_segments: 16
+    gelu_segments: 32
+    flash_attn_tile_br: 64
+    flash_attn_tile_bc: 128
+  csfe:
+    conv_pe_count: 256
+    upsample_parallel_pixels: 32
+  adcu:
+    num_keypoints: 32
+    lut_size: 4096
+    patch_size: 11
+
+dma:
+  channels: 4
+  burst_bytes: 256

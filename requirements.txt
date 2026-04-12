@@ -1,6 +1,7 @@
 # =============================================================================
 # SGM-ViT: Requirements
 # Python >= 3.9 recommended
+# NOTE: pyproject.toml is the source of truth. Use `pip install -e .`
 # =============================================================================
 
 # Core deep learning framework
@@ -9,6 +10,7 @@ torchvision>=0.15.0
 
 # Scientific computing
 numpy>=1.24.0
+scipy>=1.10.0
 
 # Computer vision utilities
 opencv-python>=4.7.0

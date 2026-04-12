@@ -51,34 +51,43 @@ import argparse
 import csv
 import logging
 import os
-import sys
 import time
 from glob import glob
 
 import cv2
 import numpy as np
+import torch
 from scipy.ndimage import gaussian_filter
 from tqdm import tqdm
-import torch
 
 # ---------------------------------------------------------------------------
-# Path setup — importable from any working directory
+# Path setup
 # ---------------------------------------------------------------------------
-_SCRIPT_DIR  = os.path.dirname(os.path.abspath(__file__))
-_PROJECT_DIR = os.path.dirname(_SCRIPT_DIR)
-_DA2_DIR     = os.path.join(_PROJECT_DIR, "Depth-Anything-V2")
-sys.path.insert(0, _PROJECT_DIR)
-sys.path.insert(0, _DA2_DIR)
-
-from core.token_router import SGMConfidenceTokenRouter
-from core.sgm_wrapper  import run_sgm_with_confidence
-from demo import (
-    load_da2_model, run_sparse_da2, run_masked_sparse_da2,
-    align_depth_to_sgm, fuse_sgm_da2,
-    fuse_dispatch, FUSION_STRATEGIES,
-    DA2_MODEL_CONFIGS, TOKEN_GRID_SIZE, EMBED_DIM_MAP,
+import core._paths  # noqa: F401  — ensures DA2 is on sys.path
+from core.fusion import fuse_sgm_da2
+from core.pipeline import (
+    DA2_MODEL_CONFIGS,
+    EMBED_DIM_MAP,
+    TOKEN_GRID_SIZE,
+    align_depth_to_sgm,
+    load_da2_model,
+    run_masked_sparse_da2,
 )
-
+from core.sgm_wrapper import run_sgm_with_confidence
+from core.token_router import SGMConfidenceTokenRouter
+from scripts.common_config import (
+    DEFAULT_ALIGN_CONF_THRESHOLD,
+    DEFAULT_CONF_SIGMA,
+    DEFAULT_DISPARITY_RANGE,
+    DEFAULT_ENCODER,
+    DEFAULT_KITTI_ROOT,
+    DEFAULT_MAX_SAMPLES,
+    DEFAULT_PKRN_MIN_DIST,
+    DEFAULT_PRUNE_LAYER,
+    DEFAULT_PRUNE_THRESHOLD,
+    DEFAULT_WEIGHTS,
+    default_results_dir,
+)
 
 # ---------------------------------------------------------------------------
 # I/O helpers
@@ -204,6 +213,40 @@ def load_pkrn_confidence(
     return pkrn_raw
 
 
+def load_protocol_confidence_maps(
+    s: dict,
+    disparity_range: int,
+    pkrn_min_dist: int,
+    smooth_sigma: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Build the confidence maps used by the evaluation protocol.
+
+    Protocol
+    --------
+    - Alignment confidence: LR-check derived mask, Gaussian-smoothed.
+    - Routing confidence: PKRN confidence, Gaussian-smoothed (or LR-check fallback).
+    - Fusion confidence: same source as routing (PKRN), to keep the pruning
+      and fusion signals consistent across scripts.
+    """
+    mismatch = np.load(s["mismatch"]).astype(bool)
+    occlusion = np.load(s["occlusion"]).astype(bool)
+    conf_align = (~(mismatch | occlusion)).astype(np.float32)
+    conf_align = gaussian_filter(conf_align, sigma=smooth_sigma)
+
+    if os.path.exists(s.get("pkrn_cache", "")) or os.path.exists(s.get("right", "")):
+        conf_route = load_pkrn_confidence(
+            s,
+            disparity_range=disparity_range,
+            pkrn_min_dist=pkrn_min_dist,
+            smooth_sigma=smooth_sigma,
+        )
+    else:
+        conf_route = conf_align
+
+    return conf_align, conf_route
+
+
 # ---------------------------------------------------------------------------
 # Metrics
 # ---------------------------------------------------------------------------
@@ -271,12 +314,11 @@ def evaluate(args: argparse.Namespace) -> None:
         'cuda' if torch.cuda.is_available() and not args.cpu else 'cpu'
     )
     logging.info('=' * 66)
-    logging.info('SGM-ViT  KITTI Disparity Evaluation')
+    logging.info('SGM-ViT KITTI Disparity Evaluation')
     logging.info('=' * 66)
     logging.info(f'  KITTI root    : {args.kitti_root}')
     logging.info(f'  Encoder       : {args.encoder}')
     logging.info(f'  Prune layer   : {args.prune_layer}')
-    logging.info(f'  Sparse mode   : {args.sparse_mode}')
     logging.info(f'  Threshold θ   : {args.threshold}')
     logging.info(f'  Re-assembly   : {"on" if not args.no_reassembly else "off"}')
     logging.info(f'  Device        : {device}')
@@ -338,18 +380,12 @@ def evaluate(args: argparse.Namespace) -> None:
         # Alignment confidence: original binary LR-check mask.
         # This is the anchor for scale+shift fitting; binary values ensure only
         # geometrically reliable SGM pixels constrain the regression.
-        mismatch  = np.load(s['mismatch']).astype(bool)
-        occlusion = np.load(s['occlusion']).astype(bool)
-        conf_align = (~(mismatch | occlusion)).astype(np.float32)
-        conf_align = gaussian_filter(conf_align, sigma=args.conf_sigma)
-
-        # Routing confidence: PKRN from aggregated cost volume (hardware-friendly).
-        # Used only for token pruning decisions — not for alignment.
-        if os.path.exists(s.get('pkrn_cache', '')) or os.path.exists(s.get('right', '')):
-            conf_route = load_pkrn_confidence(
-                s, args.disparity_range, args.pkrn_min_dist, args.conf_sigma)
-        else:
-            conf_route = conf_align  # fallback when right image unavailable
+        conf_align, conf_route = load_protocol_confidence_maps(
+            s,
+            disparity_range=args.disparity_range,
+            pkrn_min_dist=args.pkrn_min_dist,
+            smooth_sigma=args.conf_sigma,
+        )
 
         # SGM-valid mask: GT-valid pixels where SGM also has a non-zero prediction.
         # Resizes sgm_disp to gt_disp shape if needed (should match for KITTI).
@@ -392,13 +428,17 @@ def evaluate(args: argparse.Namespace) -> None:
         # Use SGM where confident, DA2 elsewhere.
         # conf_align (binary LR-check, Gaussian-smoothed) serves as the
         # confidence signal; conf_threshold controls the blend boundary.
+        conf_fuse = conf_route
+        if conf_fuse.shape != gt_disp.shape:
+            conf_fuse = cv2.resize(
+                conf_fuse,
+                (gt_disp.shape[1], gt_disp.shape[0]),
+                interpolation=cv2.INTER_LINEAR,
+            )
         disp_fused = fuse_sgm_da2(
             sgm_disp       = sgm_for_mask,   # already at gt_disp resolution
             da2_aligned    = disp_dense_eval,
-            confidence_map = cv2.resize(conf_align,
-                                        (gt_disp.shape[1], gt_disp.shape[0]),
-                                        interpolation=cv2.INTER_LINEAR)
-                             if conf_align.shape != gt_disp.shape else conf_align,
+            confidence_map = conf_fuse,
             conf_threshold = args.conf_threshold,
         )
         fused_metrics    = compute_metrics(disp_fused, gt_disp, valid_gt)
@@ -419,24 +459,14 @@ def evaluate(args: argparse.Namespace) -> None:
             prune_mask_1d[routing['prune_idx'][0]] = True
 
             t0 = time.perf_counter()
-            if args.sparse_mode == 'mask':
-                depth_sparse = run_masked_sparse_da2(
-                    model         = model,
-                    image_bgr     = left_bgr,
-                    prune_mask    = prune_mask_1d,
-                    input_size    = 518,
-                    prune_layer   = args.prune_layer,
-                    do_reassembly = not args.no_reassembly,
-                )
-            else:
-                depth_sparse = run_sparse_da2(
-                    model         = model,
-                    image_bgr     = left_bgr,
-                    prune_mask    = prune_mask_1d,
-                    input_size    = 518,
-                    prune_layer   = args.prune_layer,
-                    do_reassembly = not args.no_reassembly,
-                )
+            depth_sparse = run_masked_sparse_da2(
+                model         = model,
+                image_bgr     = left_bgr,
+                prune_mask    = prune_mask_1d,
+                input_size    = 518,
+                prune_layer   = args.prune_layer,
+                do_reassembly = not args.no_reassembly,
+            )
             t_sparse_total += time.perf_counter() - t0
 
             disp_sparse, _, _ = align_depth_to_sgm(
@@ -455,9 +485,9 @@ def evaluate(args: argparse.Namespace) -> None:
             prune_ratio       = float(routing['prune_ratio'])
 
             # ---- Fused SGM + Sparse DA2 -----------------------------------
-            conf_for_fuse_sp = conf_align
-            if conf_align.shape != gt_disp.shape:
-                conf_for_fuse_sp = cv2.resize(conf_align,
+            conf_for_fuse_sp = conf_route
+            if conf_route.shape != gt_disp.shape:
+                conf_for_fuse_sp = cv2.resize(conf_route,
                                               (gt_disp.shape[1], gt_disp.shape[0]),
                                               interpolation=cv2.INTER_LINEAR)
             disp_fused_sparse = fuse_sgm_da2(
@@ -562,8 +592,8 @@ def evaluate(args: argparse.Namespace) -> None:
             f"  {r_fused_sv['epe']:>9.4f}  {r_fused_sv['d1']:>9.4f}\n"
         )
         if not no_sparse:
-            sparse_label = f"Sparse DA2 ({args.sparse_mode})"
-            fused_sp_label = f"Fused SGM + Sparse DA2"
+            sparse_label = "Sparse DA2 (GAS)"
+            fused_sp_label = "Fused SGM + Sparse DA2"
             out += (
                 f"  {sparse_label:<24s}"
                 f"  {r_sparse['epe']:>9.4f}  {r_sparse['d1']:>9.4f}"
@@ -573,8 +603,8 @@ def evaluate(args: argparse.Namespace) -> None:
                 f"  {r_fused_sp_sv['epe']:>9.4f}  {r_fused_sp_sv['d1']:>9.4f}\n"
             )
         out += (
-            f"  (all = all GT-valid pixels;  "
-            f"sv = GT-valid ∩ SGM-predicted pixels only)\n"
+            "  (all = all GT-valid pixels;  "
+            "sv = GT-valid ∩ SGM-predicted pixels only)\n"
         )
         return out
 
@@ -625,39 +655,34 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description='SGM-ViT KITTI disparity accuracy evaluation.'
     )
-    p.add_argument('--kitti-root', default='/nfs/usrhome/pdongaa/dataczy/kitti',
+    p.add_argument('--kitti-root', default=DEFAULT_KITTI_ROOT,
         help='KITTI dataset root (contains training/ and kitti2012/).')
     p.add_argument('--weights',
-        default=os.path.join(_PROJECT_DIR, 'Depth-Anything-V2', 'checkpoints',
-                             'depth_anything_v2_vits.pth'),
+        default=DEFAULT_WEIGHTS,
         help='Path to DepthAnythingV2 checkpoint.')
-    p.add_argument('--encoder', default='vits',
+    p.add_argument('--encoder', default=DEFAULT_ENCODER,
         choices=list(DA2_MODEL_CONFIGS.keys()))
-    p.add_argument('--threshold', type=float, default=0.65,
+    p.add_argument('--threshold', type=float, default=DEFAULT_PRUNE_THRESHOLD,
         help='Token pruning confidence threshold θ.')
-    p.add_argument('--prune-layer', type=int, default=0,
+    p.add_argument('--prune-layer', type=int, default=DEFAULT_PRUNE_LAYER,
         help='ViT block at which pruning starts (0-based).')
-    p.add_argument('--sparse-mode', default='mask',
-        choices=['zero', 'mask'],
-        help="Sparse attention mode: 'mask' = GAS (Gather-Attend-Scatter), "
-             "'zero' = legacy token zeroing. (default: mask)")
     p.add_argument('--no-reassembly', action='store_true',
         help='Disable token re-assembly before the DPT decoder.')
     p.add_argument('--no-sparse', action='store_true',
         help='Skip sparse DA2 evaluation (only SGM and dense DA2).')
-    p.add_argument('--conf-threshold', type=float, default=0.7,
+    p.add_argument('--conf-threshold', type=float, default=DEFAULT_ALIGN_CONF_THRESHOLD,
         help='Minimum confidence to use a pixel for depth alignment.')
-    p.add_argument('--conf-sigma', type=float, default=5.0,
+    p.add_argument('--conf-sigma', type=float, default=DEFAULT_CONF_SIGMA,
         help='Gaussian σ for smoothing the PKRN confidence map.')
-    p.add_argument('--disparity-range', type=int, default=128,
+    p.add_argument('--disparity-range', type=int, default=DEFAULT_DISPARITY_RANGE,
         help='SGM disparity search range (must be multiple of 4). '
              'Used when computing PKRN live (cache miss).')
-    p.add_argument('--pkrn-min-dist', type=int, default=1,
+    p.add_argument('--pkrn-min-dist', type=int, default=DEFAULT_PKRN_MIN_DIST,
         help='Minimum disparity gap from winner for PKRN second-best search.')
-    p.add_argument('--max-samples', type=int, default=0,
+    p.add_argument('--max-samples', type=int, default=DEFAULT_MAX_SAMPLES,
         help='Evaluate only the first N samples (0 = all).')
     p.add_argument('--out-dir',
-        default=os.path.join(_PROJECT_DIR, 'results', 'eval_kitti'),
+        default=default_results_dir('eval_kitti'),
         help='Directory to save results and log.')
     p.add_argument('--cpu', action='store_true',
         help='Force CPU inference.')
