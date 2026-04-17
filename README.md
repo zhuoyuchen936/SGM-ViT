@@ -67,8 +67,9 @@ project record:
 - hard `token pruning` is not safe for dense DA2 prediction; it noticeably
   hurts dense-only quality, and fusion only partially hides that damage
 
-Because of that, pruning-related code remains in the repository mainly for
-ablation and historical comparison. It is no longer the default mainline.
+Because of that, pruning is treated as an archived route rather than an active
+entry point. The route history, negative findings, and representative results
+are summarized in `paper/prior_experiment.md`.
 
 ## Repository Layout
 
@@ -122,9 +123,56 @@ Common environment variables:
 
 - `SGMVIT_KITTI_ROOT`
 - `SGMVIT_ETH3D_ROOT`
-- `SGMVIT_SCENEFLOW_ROOT`
+- `SGMVIT_SCENEFLOW_ROOT` (default: `.../sceneflow_official/extracted/driving`)
 - `SGMVIT_MIDDLEBURY_ROOT`
 - `SGMVIT_DA2_WEIGHTS`
+
+## Dataset Preparation
+
+The evaluation and training scripts expect four stereo datasets stored
+on the NFS share.  Only SceneFlow setup is documented here in detail;
+KITTI, ETH3D, and Middlebury follow standard community layouts.
+
+### SceneFlow (Driving subset)
+
+The official SceneFlow dataset is hosted at
+<https://lmb.informatik.uni-freiburg.de/resources/datasets/SceneFlowDatasets.en.html>.
+
+Three subsets are available: **Driving**, **Monkaa**, and **FlyingThings3D**.
+Currently only the Driving subset (35mm / scene_forwards / fast, 300 frames)
+is used by the code.
+
+After downloading and extracting the Driving tarballs, the directory layout
+should be:
+
+```text
+sceneflow_official/extracted/driving/       <- SGMVIT_SCENEFLOW_ROOT
+  frames_cleanpass/
+    35mm_focallength/scene_forwards/fast/{left,right}/*.png
+  frames_finalpass/                          (not used by current code)
+  disparity/
+    35mm_focallength/scene_forwards/fast/left/*.pfm
+  camera_data/                               (not used by current code)
+  sgm_hole/                                  (pre-computed, see below)
+    35mm_focallength/scene_forwards/fast/left/
+      35mm_focallength_scene_forwards_fast_left_<NNNN>.pfm
+      35mm_focallength_scene_forwards_fast_left_<NNNN>_mismatches.npy
+      35mm_focallength_scene_forwards_fast_left_<NNNN>_occlusion.npy
+```
+
+The `sgm_hole/` directory is **not** part of the official download.
+Generate it with:
+
+```bash
+python scripts/precompute_sgm_hole.py --dataset sceneflow
+```
+
+The default root path is
+`/nfs/usrhome/pdongaa/dataczy/sceneflow_official/extracted/driving`.
+Override with `SGMVIT_SCENEFLOW_ROOT` or the `--sceneflow-root` CLI flag.
+
+The Monkaa and FlyingThings3D subsets are extracted alongside Driving at
+`sceneflow_official/extracted/{monkaa,flyingthings3d}/` for future use.
 
 ## Quick Start
 

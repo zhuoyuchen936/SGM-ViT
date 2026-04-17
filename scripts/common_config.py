@@ -16,7 +16,7 @@ DEFAULT_ETH3D_ROOT = os.environ.get(
 )
 DEFAULT_SCENEFLOW_ROOT = os.environ.get(
     "SGMVIT_SCENEFLOW_ROOT",
-    "/nfs/usrhome/pdongaa/dataczy/sceneflow_all",
+    "/nfs/usrhome/pdongaa/dataczy/sceneflow_official/extracted/driving",
 )
 DEFAULT_MIDDLEBURY_ROOT = os.environ.get(
     "SGMVIT_MIDDLEBURY_ROOT",

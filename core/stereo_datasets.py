@@ -11,7 +11,7 @@ ETH3DStereoDataset
     27 scenes, sparse GT (lidar), sgm_hole pre-computed.
 
 SceneFlowDrivingDataset
-    Root: /nfs/usrhome/pdongaa/dataczy/sceneflow_all
+    Root: /nfs/usrhome/pdongaa/dataczy/sceneflow_official/extracted/driving
     300 frames (Driving / 35mm_focallength / scene_forwards / fast).
     Dense synthetic GT, sgm_hole pre-computed.
 
@@ -51,7 +51,7 @@ from torch.utils.data import Dataset
 # ---------------------------------------------------------------------------
 _NFS = "/nfs/usrhome/pdongaa/dataczy"
 _DEFAULT_ETH3D_ROOT       = os.environ.get("SGMVIT_ETH3D_ROOT",       f"{_NFS}/eth3d")
-_DEFAULT_SCENEFLOW_ROOT   = os.environ.get("SGMVIT_SCENEFLOW_ROOT",   f"{_NFS}/sceneflow_all")
+_DEFAULT_SCENEFLOW_ROOT   = os.environ.get("SGMVIT_SCENEFLOW_ROOT",   f"{_NFS}/sceneflow_official/extracted/driving")
 _DEFAULT_MIDDLEBURY_ROOT  = os.environ.get("SGMVIT_MIDDLEBURY_ROOT",  f"{_NFS}/Middelburry")
 _DEFAULT_KITTI_ROOT       = os.environ.get("SGMVIT_KITTI_ROOT",       f"{_NFS}/kitti")
 
