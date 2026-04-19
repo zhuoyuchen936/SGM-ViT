@@ -1,221 +1,126 @@
-# SGM-ViT 项目概览与阶段总结
+# SGM-ViT 当前状态
 
-## 1. 项目目标
+**最后更新**: 2026-04-20（Phase 8 Pareto 完成）
 
-SGM-ViT 的核心目标是把传统双目几何和 ViT 单目深度结合起来，并进一步服务于边缘/FPGA 场景。项目当前围绕三条主线展开：
+## 2026-04-20 快照（Phase 8 完成后）
+
+### 算法侧主线
+
+算法 pipeline 的"融合"这一阶段已**从 heuristic 全面切换到 learned EffViT**。Phase 7/8 结果：
+
+| 变体（7ch 输入）| params | GFLOPs @ 384×768 | avg EPE | 角色 |
+|---|---|---|---|---|
+| `b0_h24` | **0.735M** | 4.95 | 1.726 | 极致小（FPGA 部署起点）|
+| `b0_h48` | 0.879M | 15.89 | 1.747 | — |
+| `b1_h24` | 4.703M | **9.85** | 1.702 | **性价比最佳（推荐默认）** |
+| `b1_h48` | 4.853M | 20.85 | 1.686 | Phase 7 Iter 1 baseline |
+| `b2_h24` | 15.042M | 22.03 | 1.679 | ETH3D/Mid 单项最佳 |
+| `b2_h48` | 15.198M | 33.09 | **1.638** | 最强精度 |
 
-1. 用 SGM 视差和 Depth Anything V2 做置信度引导融合，提升最终深度质量。
-2. 用 SGM 置信图作为外部先验，驱动 ViT token pruning，减少注意力计算。
-3. 把上述算法整理成可映射到硬件的数据流、模块划分和模拟器分析流程。
+**全 6 变体**在 KITTI / SceneFlow / ETH3D / Middlebury 4 数据集 × EPE & bad 的 8 项指标上**全面超越 heuristic_fused** 和 Phase 6 Iter 2 baseline。
 
-## 2. 当前阶段判断
+- 最强 ckpt：`artifacts/fusion_phase8_pareto/b2_h48/mixed_finetune/best.pt`
+- 推荐部署 ckpt：`artifacts/fusion_phase8_pareto/b1_h24/mixed_finetune/best.pt`
+- Pareto 图 + 表：`results/phase8_pareto/pareto_plot.png` + `summary_table.md`
 
-这个仓库已经不是概念验证草图，而是一个比较完整的研究型原型。
+### 当前主线 pipeline
 
-目前已经具备：
+```
+左图 ──→ DA2 + Token Merge + W-CAPS decoder ──→ mono disparity
+右图 ──┬→ 
+左图 ──┘→ SGM (tuned P2=3.0 Win=5) ──→ sgm_disp + hole_mask + PKRN conf
 
-- 完整的软件端到端流程：
-  `双目图像 -> SGM 视差/置信度 -> token routing -> 稠密或稀疏 DA2 -> 对齐 -> 融合`
-- 可直接调用的 SGM 包装层，能够返回 `disparity` 与 `PKRN confidence`
-- GAS 稀疏注意力实现
-- 基于 SGM 置信图的 token router
-- 多个 KITTI 评测脚本
-- 融合、剪枝、量化、双通路稀疏、置信度分析等实验结果
-- 初步硬件/模拟器分析代码
+↓
+align_depth_to_sgm (Huber)
+↓
+[RGB, mono, sgm, conf, sgm_valid] (7 channels)
+↓
+EffViTDepthNet (MIT EfficientViT backbone + FPN decoder)
+↓
+residual-on-mono → final disparity
+```
 
-但它仍然属于“研究代码”，还没有进入“可稳定复现、可放心交接”的工程化阶段。
+### CAL letter（投稿中）
+- 4-page IEEE CAL，状态：数据完整性审校通过（2026-04-19）
+- 论文主稿：`paper/EdgeStereoDAv2_ICCAD.md`
+- 投稿追踪：`memory-bank/paper-progress.md`
 
-## 3. 当前进展
+### Phase 9 HW 重构待办（post-CAL）
+现有 HW（Phase 1-6 EdgeStereoDAv2）跑不了 EffViT（FP32 + 权重 4.85MB > L2 512KB + FU 不支持 FPN decoder dataflow）。Phase 9 计划：
+1. QAT INT8 EffViT
+2. Unified Fusion Engine v2（FPN decoder + 3×3 DW 阵列）
+3. WeightStreamer + DRAM streaming
+4. Simulator + DAC/ICCAD 2026 full paper
 
-### 3.1 最强结果在融合，不在稀疏本身
+详见 `~/.claude/plans/stateful-hatching-spark.md`。
 
-从现有 `results/eval_fusion/fusion_summary.txt` 来看，当前最有说服力的结论是：
+---
 
-- `SGM` 单独使用效果较差
-- `Dense DA2 + align` 明显优于 SGM
-- `SGM + Dense DA2` 的融合结果最好
+## 历史主线（Phase 1-6 维护期）
 
-代表性结果：
+以下为 Phase 7 之前的活跃主线（保留代码兼容，不再作为默认路径）：
 
-- `SGM`: `EPE 11.14`, `D1 29.86%`
-- `Dense DA2 + align`: `EPE 2.90`, `D1 29.79%`
-- 最优融合：`EPE 1.9567`, `D1 16.20%`
+- `token merge` — 保留
+- `decoder-aware W-CAPS / adaptive precision` — 保留
+- `edge_aware_residual` heuristic fusion — **作为 heuristic baseline** 保留对比
+- `FusionNet`（Phase 1-5 轻量搜索族）— `rcf_refine` ckpt 仍可用，但 Phase 7 EffViT 已全面领先
 
-这说明项目最扎实的成果是：
-“SGM 和 DA2 的互补性是真实存在的，而且置信度引导融合确实有效。”
+### 已确认结论（Phase 1-6 时期）
 
-### 3.2 稀疏分支已经能跑通，但还不是最终最优点
+1. `hard token pruning` 会明显伤害 dense DA2 预测，不再作为主线
+2. `merge` 比 pruning 更适合 dense prediction，因为它保留了完整空间位置
+3. `decoder` 侧降精度明显比 `encoder` 侧温和，尤其 coarse decoder 更有希望
+4. ~~`heuristic fusion` 目前仍比 learned fusion 更稳~~ — **此结论已被 Phase 7 EffViT 推翻**：learned fusion 在 4 数据集 × 2 指标上全面碾压 heuristic，边界观感和噪声控制也优于 heuristic_fused。
 
-从 `results/eval_pruning/pruning_summary.txt` 看：
+### Phase 7 的关键突破
 
-- 当前常用剪枝点约为 `18.6%` token pruning
-- 对应 `33.8%` attention reduction（`prune_layer=0`）
-- 稀疏 DA2 本身精度明显差于稠密 DA2
-- 但融合后仍然保持可接受表现：
-  `Fused SGM + Sparse DA2 = EPE 2.1892, D1 16.9969%`
+Phase 6 内 learned fusion 始终 7/8 胜（唯独 Middlebury bad2 差 1.2pp），**其根因不在网络本身**，而在于：
+- v1 fusion_cache 把 SGM 的 hole 填充后的脏值当作"真 SGM"喂给模型
+- 训练 SceneFlow 只用了 driving/35mm/scene_forwards/fast 1 个 split 共 300 帧
+- 输入通道 sgm_valid 基于 `(sgm>0)` 推断，在 hole-filled cache 下全为 True
 
-这说明稀疏路径已经具备研究价值，但还需要继续优化，暂时还不能直接替代稠密主线。
+Phase 7 一次性解决：
+- tuned SGM 重跑（P2=3.0, Win=5）+ v3 cache 格式（explicit `sgm_valid`, sgm 在 hole 处严格 = 0）
+- SF driving 全 8 splits = 4400 pair（18× 扩大）
+- hole-aug 增强 + per-sample τ 混合 batch
+- **结果**：Middlebury bad2 从 27% 降到 20%（超 heuristic 的 26% 有 5.8pp 裕度）
 
-### 3.3 剪枝层位置仍然是开放问题
+---
 
-从 pruning sweep 可以看到：
+## 仓库入口
 
-- 越早开始 pruning，理论注意力节省越大
-- 越晚开始 pruning，融合精度略有改善
+### Phase 7+ 主入口（推荐）
+- `scripts/train_effvit.py` — EffViT 训练（两 stage 链式）
+- `scripts/eval_effvit.py` — 4 数据集 eval
+- `scripts/build_fusion_cache_v3.py` — v3 cache 构建（tuned SGM + sgm_valid）
+- `scripts/rerun_sgm_tuned.py` — 4 数据集统一 tuned SGM
+- `scripts/profile_effvit.py` — params + GFLOPs
+- `scripts/pareto_analyze.py` — Pareto 汇总
+- `scripts/run_phase8_pareto.sh` — auto-chain 6 变体
+- `scripts/demo_phase7.py` — 最终 demo（6 面板）
 
-也就是说，这个项目当前真正面临的是一个 Pareto 取舍，而不是“存在单一最佳配置”。
+### Phase 1-6 历史入口（兼容保留）
+- `demo.py` — Phase 1-5 demo（含 RCF 启发式）
+- `scripts/train_fusion_net.py` / `scripts/eval_fusion_net.py` — Phase 1-5 FusionNet 训练/eval
+- `scripts/build_fusion_cache.py` — v1 cache（Phase 1-6 用）
+- `scripts/precompute_sgm_hole.py` — 旧 SGM 预计算（hardcoded params）
+- `scripts/eval_merge_adaptive.py` / `eval_token_merge.py` / `eval_fusion.py` — W-CAPS / token merge / heuristic fusion eval
+- `scripts/search_fusion_arch.py` / `run_four_dataset_demos.py` — 架构搜索 / demo
 
-### 3.4 Two-pass GAS 暂时不划算
+---
 
-从 `results/eval_twopass/twopass_results.txt` 看：
+## 历史路线归档
 
-- Two-pass GAS 对精度帮助很小
-- 但会带来明显额外开销
+- `paper/prior_experiment.md` — hard pruning / two-pass / early FusionNet 等淘汰方向
+- `memory-bank/progress.md` — Phase 1-8 完整日志（含 Fix B/C 失败分支实验）
 
-所以当前阶段不建议把主要精力继续压在 two-pass 路线。
+---
 
-### 3.5 量化方向中，INT8 比 INT4 更现实
+## 文档说明
 
-从 `results/eval_quantization/quantization_results.txt` 看：
+- `README.md` 描述公开入口
+- `PROJECT_STATUS_CN.md`（本文件）是**当前快照**
+- `paper/EdgeStereoDAv2_ICCAD.md` 是论文主稿
+- `paper/prior_experiment.md` 是历史实验档案
+- `memory-bank/` 是项目长期记忆库（设计、进度、架构、HW、paper 投稿，共 8 份）；从此目录开始阅读：`memory-bank/README.md`
 
-- `INT8` 与 FP32 很接近
-- `Mixed` 有一定希望，但已经开始出现可见精度损失
-- `INT4` 当前掉点过大
-
-因此如果下一步要推进硬件友好优化，量化更适合优先走 INT8 或谨慎混合精度。
-
-## 4. 当前主要问题
-
-### 4.1 评测协议没有完全统一
-
-这是目前最重要的问题。
-
-不同脚本里，下面这些设置曾经分散定义，容易造成结果漂移：
-
-- `kitti-root`
-- `weights`
-- `conf-threshold`
-- `conf-sigma`
-- `disparity-range`
-- `pkrn-min-dist`
-- `out-dir`
-
-更重要的是，脚本之间对“哪种置信图用于什么阶段”并不完全一致：
-
-- `alignment` 通常使用 LR-check 掩码
-- `routing` 使用 PKRN
-- `fusion` 在不同脚本里曾经混用过 LR-check 和 PKRN
-
-这会直接影响不同表格之间的可比性。
-
-### 4.2 速度结论还不够干净
-
-当前仓库里不同 summary 文件里的 timing 结论并不完全一致，说明计时路径里可能混入了：
-
-- Python 开销
-- 图像 resize
-- routing 逻辑
-- alignment/fusion 后处理
-- 日志或文件写入
-
-如果后面要写论文或做硬件映射，这块必须继续收紧。
-
-### 4.3 仓库结构已经演进，但文档曾经明显落后
-
-现在仓库的真实结构已经偏向：
-
-- `core/`
-- `scripts/`
-- `paper/`
-- `simulator/`
-- `hardware/`
-
-但旧文档没有完全跟上，所以理解成本偏高。这个问题已经开始修复，但还可以继续完善。
-
-### 4.4 工程化验证层还不够
-
-目前缺少：
-
-- 自动化测试
-- CI
-- 统一配置文件
-- 一键复现实验命令
-
-对于多分支研究项目来说，这意味着后续改动很容易造成“结果悄悄漂移”。
-
-## 5. 我建议的下一步方向
-
-### 第一优先级：锁定统一评测协议
-
-先把主表所需的协议统一下来：
-
-- `alignment` 使用什么置信图
-- `routing` 使用什么置信图
-- `fusion` 使用什么置信图
-- 所有脚本共享一套默认参数
-
-如果这一步不做扎实，后面所有表格和结论都会受影响。
-
-### 第二优先级：固定一条可信的主结果复现链路
-
-建议先把下面这一组结果做成“标准主表”：
-
-- SGM
-- Dense DA2 + align
-- Fused SGM + Dense DA2
-- Sparse DA2
-- Fused SGM + Sparse DA2
-
-这条链路应该能被稳定复现，并成为后续比较的统一基线。
-
-### 第三优先级：继续优化 sparse path，而不是继续横向扩展
-
-当前更值得投入的是：
-
-- 更好的 routing 策略
-- 更合理的 prune layer 设计
-- 更稳定的 token 恢复机制
-- 稀疏路径与融合路径的一致性优化
-
-而不是继续投入 two-pass 这种目前收益不明显的分支。
-
-### 第四优先级：把量化和稀疏组合起来做
-
-后续最有现实意义的方向之一是：
-
-- 在 INT8 前提下复现主表
-- 测试 “INT8 + sparse” 是否能一起成立
-- 明确哪些模块最适合更激进的混合精度
-
-### 第五优先级：强化软件结果和硬件模拟器之间的闭环
-
-项目已经有了很完整的硬件叙事，但下一步应该更明确地把下面几件事对应起来：
-
-- 实测 prune ratio
-- 实测不同 prune layer 的配置
-- 实测软件 latency
-- 模拟器中的 FLOPs / cycles / energy 假设
-
-这样硬件部分的说服力会强很多。
-
-## 6. 近期建议执行清单
-
-我建议近期按下面顺序推进：
-
-1. 统一评测默认参数与协议。
-2. 固定主表复现实验脚本。
-3. 清理 timing 统计方式，拆开模型时间和端到端时间。
-4. 给 `token_router / fusion / alignment` 补最小测试。
-5. 再继续推进 sparse + quantization 的联合优化。
-
-## 7. 一句话总结
-
-这个项目现在最值得肯定的地方，是它已经证明了：
-
-- 融合方向是成立的；
-- SGM 置信图确实可以作为系统级控制信号；
-- 稀疏注意力不是停留在设想，而是已经实现并有初步结果；
-- 硬件映射故事也已经具备继续深入的基础。
-
-当前最缺的不是新点子，而是“收口”和“统一”。
-只要把评测协议、主表复现、计时口径和软件-硬件闭环再扎实一轮，这个项目会比现在更像一个可提交、可答辩、可延展的完整研究系统。
