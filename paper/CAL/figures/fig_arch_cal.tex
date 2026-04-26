@@ -1,0 +1,36 @@
+\documentclass[tikz,border=6pt]{standalone}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,fit,backgrounds,shapes.geometric}
+\begin{document}
+\begin{tikzpicture}[
+  font=\sffamily\footnotesize,
+  box/.style={draw,rounded corners=2pt,minimum height=8mm,minimum width=18mm,align=center,fill=white},
+  sa/.style={draw,thick,rounded corners=3pt,fill=blue!10,minimum width=34mm,minimum height=22mm,align=center},
+  apt/.style={draw,thick,rounded corners=3pt,fill=orange!15,minimum width=32mm,minimum height=22mm,align=center},
+  sig/.style={-Latex,thick,red!70!black,dashed},
+  dat/.style={-Latex,thick,black},
+]
+
+\node[draw,rounded corners=2pt,fill=gray!10,minimum width=26mm,minimum height=10mm,align=center] (sgm) {SGM engine\\(coresident)};
+
+\node[sa,right=18mm of sgm] (sa) {Reconfigurable\\32$\times$32 Systolic Array\\\scriptsize OS / WS / IS\\\scriptsize +16$\times$3$\times$3 DW sidecar};
+
+\node[apt,below=6mm of sa] (apt) {APT Engine\\\scriptsize density $\tau_d$ / precision $\tau_p$\\\scriptsize \{keep,drop\} $\times$ \{INT4,FP32\}};
+
+\node[box,right=12mm of sa,fill=green!10] (dram) {DRAM\\+ WStreamer};
+
+\node[box,below=10mm of apt] (out) {Fused disparity};
+
+\draw[sig] (sgm.east) -- node[above,midway,sloped,font=\scriptsize]{PKRN provenance} (apt.west |- sgm.east) -- (apt.west);
+\draw[sig] (sgm.east) ++ (0,2mm) -- ++(6mm,0) |- (sa.west);
+
+\draw[dat] (sa.east) -- (dram.west);
+\draw[dat,<->] (sa.south) -- node[right,midway,font=\scriptsize]{tokens} (apt.north);
+\draw[dat] (apt.south) -- (out.north);
+
+\begin{scope}[on background layer]
+\node[draw,dashed,rounded corners=4pt,fit=(sa)(apt),inner sep=5pt,label=above:{\textbf{EdgeStereoDAv2-CAL core}}] {};
+\end{scope}
+
+\end{tikzpicture}
+\end{document}

@@ -412,3 +412,30 @@ Main 入口跑 4 个阶段:
 - **设计文档**: `memory-bank/hardware-design-document.md` — 完整规格 (Spec A-D + 模块详细设计)
 - **架构索引**: `memory-bank/hardware-architecture.md` — 每个硬件文件的作用速查
 - **本地计划文件**: `C:\Users\14527\.claude\plans\frolicking-weaving-forest.md`
+
+
+---
+
+## Step 15 — 消融实验集成 (Phase 11 系列, 2026-04-21)
+
+Simulator 在 Phase 10 Step 14 完成架构验证后，Phase 11 把它作为 ablation 工具，驱动 reviewer-grade 消融实验：
+
+| 子实验 | 范围 | 产出 |
+|--------|------|------|
+| **11a 主 ablation** | 8 行 × 11 指标 (GPU_ref + A/B/C/D_FP32/D_INT8/D−TM/A+EV) | `results/phase11_hw_ablation/ablation_table.{csv,md}` + `paper/tcasi/table_hw_ablation.tex` + `fig_latency_stacked.pdf` |
+| **11b 2×2 factorial** | TM × W-CAPS 正交分解 | `ablation_2x2_tm_wcaps.md` + `table_tm_wcaps_2x2.tex` |
+| **11c hp% sweep** | W-CAPS hp ∈ {100,75,50,25} | `ablation_hp_sweep.md` + `table_hp_sweep.tex` |
+
+**Simulator 新增支持** (相比 Step 14)：
+- `hardware/scu/dpc.py`: `stage_policy="none"` 关闭 W-CAPS
+- `scripts/hw_ablation_phase11.py`: `simulate_one()` 核心 + 能量/面积/DRAM 解析后处理 + 校准因子 0.38 对齐论文 172 mW
+- `scripts/gpu_bench_phase11.py`: RTX TITAN 外部 GPU 基线实测
+
+**Simulator 已知局限** (ablation 揭露)：
+1. 顺序调度导致绝对 FPS 偏低 ~5-6× 于论文 headline（相对排序正确）
+2. EffViT 路径下 W-CAPS 变 no-op（DPT decoder 已被替换，无 dual-path 槽位）
+3. Dual-path 模型 HP+LP 总是都跑，hp% 不改 cycles（sparse-gated 是未实现的替代方案）
+
+**Ablation 结果完整记录**：`memory-bank/progress.md` Phase 11 段（line 1030–1156）。
+
+**论文集成状态**：3 个 LaTeX 表 + 1 个 PDF 图已在 `paper/tcasi/`，pdflatex 独立编译全部通过；未主动 `\input{}` 进 `main.tex`，由作者决定是否吸收。

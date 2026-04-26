@@ -1,0 +1,43 @@
+% Ablation A3 --- ISA Leave-One-Out Minimality Analysis
+% Data source: results/ablation_a3/leave_one_out.json
+\begin{table}[tb]
+\caption{Ablation A3 --- leave-one-out minimality of the 12-op ISA. For each opcode,
+we report the minimal equivalent sequence using only the remaining 11 ops, the
+resulting cycle expansion, weight-traffic expansion, and cycle-share coverage on
+the EffViT-B1-h24 INT8 frame workload. An opcode \emph{passes} the minimality
+criterion if it costs $\geq 2{\times}$ cycles when removed \emph{or} carries
+$\geq 3\%$ cycle coverage. 11/12 opcodes pass.
+\textbf{Note:} the cycle-multiplier and weight-traffic-multiplier columns are
+\emph{design-time analytical estimates} from per-engine cost tables and engineer-derived
+fallback sequences (\texttt{scripts/ablation\_a3\_isa\_coverage.py}); they are \emph{not}
+measured cycles from a recompiled / re-traced workload. See Sec.~\ref{sec:limitations} L3
+for the gap and Sec.~\ref{sec:future} F4 for the planned compiler-based replacement.}
+\label{tab:a3}
+\centering
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{|l|c|c|c|c|}
+\hline
+\textbf{Opcode} & \textbf{Cov.} & \textbf{Cycle} & \textbf{Weight} & \textbf{Pass} \\
+                & (\% cyc.)     & mult.\         & traffic mult.\  &               \\
+\hline
+\texttt{CONV\_3X3\_DW}         & 64.0\% & $6.2\times$ & $9.0\times$ & \checkmark \\
+\texttt{CONV\_1X1}             & 18.3\% & $3.1\times$ & $1.0\times$ & \checkmark \\
+\texttt{UPSAMPLE\_2X}          & 4.1\%  & $4.0\times$ & $1.5\times$ & \checkmark \\
+\texttt{RESIDUAL\_ADD}         & 3.5\%  & $3.2\times$ & $1.2\times$ & \checkmark \\
+\texttt{BN\_AFFINE}            & 2.8\%  & $2.0\times$ & $1.1\times$ & \checkmark \\
+\texttt{HARDSWISH}             & 2.6\%  & $2.4\times$ & $1.05\times$ & \checkmark \\
+\texttt{LOAD\_WEIGHT\_TILE}    & 1.5\%  & $\infty$    & $\infty$    & \checkmark$^{*}$ \\
+\texttt{SYNC\_BARRIER}         & 1.2\%  & $1.6\times$ & $1.0\times$ & --- \\
+\texttt{CLAMP\_RESIDUAL}       & 0.8\%  & $2.0\times$ & $1.0\times$ & \checkmark \\
+\texttt{SELECT\_MASK}          & 0.6\%  & $2.4\times$ & $1.0\times$ & \checkmark \\
+\texttt{EDGE\_AWARE\_BLEND}    & 0.4\%  & $5.4\times$ & $1.18\times$ & \checkmark \\
+\texttt{HEURISTIC\_3X3\_FILTER}& 0.2\%  & $2.1\times$ & $1.30\times$ & \checkmark \\
+\hline
+\multicolumn{5}{|l|}{\footnotesize $^{*}$\texttt{LOAD\_WEIGHT\_TILE} has no fallback: its removal makes} \\
+\multicolumn{5}{|l|}{\footnotesize the learned-fusion path infeasible within the 1.87\,mm$^2$ die area.} \\
+\multicolumn{5}{|l|}{\footnotesize \texttt{SYNC\_BARRIER} fails the strict threshold but removing it} \\
+\multicolumn{5}{|l|}{\footnotesize requires pessimistic per-op stalls; see discussion in \S\ref{sec:a3_ablation}.} \\
+\hline
+\end{tabular}
+\end{table}

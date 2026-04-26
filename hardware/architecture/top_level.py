@@ -1,584 +1,385 @@
 """
-EdgeStereoDAv2 Top-Level Architecture
-Complete hardware accelerator architecture description
+hardware/architecture/top_level.py
+==================================
+EdgeStereoDAv2 Top-Level Accelerator (SA + 5 SCUs).
+
+Major revision: replaces separate VFE/CSFE/ADCU engine classes with
+a unified systolic array and five special compute units.
 """
+from __future__ import annotations
 
-import numpy as np
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from dataclasses import dataclass
+from typing import Any
 
+from hardware.pe_array.unified_sa import UnifiedSystolicArray, SAConfig
+from hardware.scu.crm import ConfidenceRoutingModule, CRMConfig
+from hardware.scu.gsu import GatherScatterUnit, GSUConfig
+from hardware.scu.dpc import DualPrecisionController, DPCConfig
+from hardware.scu.adcu import AbsoluteDisparityCU, ADCUConfig
+from hardware.scu.fu import FusionUnit, FUConfig
+from hardware.architecture.interconnect import L2Arbiter, ArbiterConfig
+from hardware.architecture.memory_hierarchy import MemoryHierarchySpec
+
+
+# ---------------------------------------------------------------------------
+# Top-Level Configuration
+# ---------------------------------------------------------------------------
 
 @dataclass
 class AcceleratorConfig:
-    """Top-level accelerator configuration"""
+    """Top-level accelerator configuration."""
     # Process technology
     process_node_nm: int = 28
     clock_freq_mhz: int = 500
 
-    # PE Array
-    pe_rows: int = 32
-    pe_cols: int = 32
-    mac_bitwidth: int = 8  # INT8 MAC
-    num_macs: int = 1024  # pe_rows × pe_cols
+    # SA
+    sa: SAConfig = None
+    # SCUs
+    crm: CRMConfig = None
+    gsu: GSUConfig = None
+    dpc: DPCConfig = None
+    adcu: ADCUConfig = None
+    fu: FUConfig = None
+    # Interconnect
+    arbiter: ArbiterConfig = None
 
-    # Memory hierarchy
-    l0_reg_bytes_per_pe: int = 512
-    l1_sram_bytes_per_engine: int = 64 * 1024  # 64 KB
-    l2_shared_sram_bytes: int = 512 * 1024     # 512 KB
-    num_l1_banks: int = 16
-    num_l2_banks: int = 32
-
-    # Engines
-    num_vfe_cores: int = 1  # ViT Feature Engine
-    num_csfe_cores: int = 1  # Cross-Scale Fusion Engine
-    num_adcu_cores: int = 1  # Absolute Disparity Calibration Unit
-
-    # External memory
-    dram_bandwidth_gbps: float = 16.0  # LPDDR4x
-    dram_capacity_gb: int = 2
-
-    # DMA
-    dma_channels: int = 4
-    dma_burst_bytes: int = 256
+    def __post_init__(self):
+        if self.sa is None:
+            self.sa = SAConfig()
+        if self.crm is None:
+            self.crm = CRMConfig()
+        if self.gsu is None:
+            self.gsu = GSUConfig()
+        if self.dpc is None:
+            self.dpc = DPCConfig()
+        if self.adcu is None:
+            self.adcu = ADCUConfig()
+        if self.fu is None:
+            self.fu = FUConfig()
+        if self.arbiter is None:
+            self.arbiter = ArbiterConfig()
 
     @property
     def peak_tops(self) -> float:
-        """Peak INT8 throughput in TOPS"""
-        return self.num_macs * self.clock_freq_mhz * 1e6 * 2 / 1e12
-
-    @property
-    def total_sram_bytes(self) -> int:
-        """Total on-chip SRAM"""
-        l1_total = self.l1_sram_bytes_per_engine * 3  # VFE, CSFE, ADCU
-        return l1_total + self.l2_shared_sram_bytes
-
-    @property
-    def total_sram_kb(self) -> float:
-        return self.total_sram_bytes / 1024
+        return self.sa.num_macs * self.clock_freq_mhz * 1e6 * 2 / 1e12
 
 
-class ViTFeatureEngine:
-    """
-    ViT Feature Engine (VFE)
-    Processes DINOv2 encoder transformer blocks.
-
-    Components:
-    - Reconfigurable MAC array for MHSA and MLP matrix multiplications
-    - Hardware LayerNorm unit
-    - Piecewise-linear softmax approximation
-    - GELU approximation unit
-    - Flash Attention tiling controller
-    """
-
-    def __init__(self, config: AcceleratorConfig):
-        self.config = config
-
-    def describe(self) -> dict:
-        return {
-            'name': 'ViT Feature Engine (VFE)',
-            'function': 'Processes transformer encoder blocks (MHSA + MLP)',
-            'components': {
-                'mac_array': {
-                    'size': f'{self.config.pe_rows}×{self.config.pe_cols}',
-                    'type': f'INT{self.config.mac_bitwidth} systolic array',
-                    'dataflow': 'Weight-Stationary (WS)',
-                    'peak_throughput_gops': self.config.num_macs * self.config.clock_freq_mhz / 1000,
-                },
-                'layernorm_unit': {
-                    'type': 'Streaming LayerNorm',
-                    'pipeline_stages': 3,
-                    'throughput': f'{self.config.pe_cols} elements/cycle',
-                    'operations': 'mean, variance, normalize, scale+shift',
-                },
-                'softmax_unit': {
-                    'type': 'Piecewise-linear approximation',
-                    'segments': 16,
-                    'precision': '< 0.1% relative error',
-                    'pipeline_stages': 4,
-                    'operations': 'running-max subtraction, exp-LUT, accumulate, normalize',
-                },
-                'gelu_unit': {
-                    'type': 'Piecewise-linear approximation',
-                    'segments': 32,
-                    'precision': '< 0.5% relative error',
-                    'pipeline_stages': 2,
-                },
-                'flash_attention_controller': {
-                    'tile_br': 64,
-                    'tile_bc': 128,
-                    'function': 'Coordinates tiled attention without full N×N materialization',
-                    'running_stats_regs': '64 entries (max, sum) in FP16',
-                },
-            },
-            'local_sram': f'{self.config.l1_sram_bytes_per_engine // 1024} KB',
-            'supported_operations': [
-                'Dense matrix multiplication (QKV projection, MLP)',
-                'Tiled attention (Q×K^T, softmax, attn×V)',
-                'LayerNorm',
-                'GELU activation',
-                'Residual addition',
-            ],
-        }
-
-    def estimate_area_mm2(self, node_nm: int = 28) -> dict:
-        """Estimate area breakdown"""
-        # Based on published data for similar designs
-        scale = (node_nm / 28) ** 2  # Scale factor relative to 28nm
-
-        mac_area = self.config.num_macs * 0.0004 * scale  # ~0.4 um² per INT8 MAC at 28nm
-        l1_sram_area = self.config.l1_sram_bytes_per_engine * 0.001 * scale / 1024  # ~1 um²/KB at 28nm
-        control_area = 0.05 * scale
-        special_units = 0.03 * scale  # LN, softmax, GELU
-
-        return {
-            'mac_array_mm2': mac_area,
-            'l1_sram_mm2': l1_sram_area,
-            'control_mm2': control_area,
-            'special_units_mm2': special_units,
-            'total_mm2': mac_area + l1_sram_area + control_area + special_units,
-        }
-
-
-class CrossScaleFusionEngine:
-    """
-    Cross-Scale Fusion Engine (CSFE)
-    Processes DPT decoder: multi-scale feature fusion with convolutions.
-
-    Components:
-    - Reconfigurable convolution engine (1×1 and 3×3)
-    - Bilinear upsampling hardware unit
-    - Feature addition/concatenation unit
-    """
-
-    def __init__(self, config: AcceleratorConfig):
-        self.config = config
-
-    def describe(self) -> dict:
-        # CSFE shares the MAC array with VFE but reconfigured for conv
-        conv_macs = min(self.config.num_macs, 256)  # Use subset for conv
-
-        return {
-            'name': 'Cross-Scale Fusion Engine (CSFE)',
-            'function': 'DPT decoder multi-scale feature fusion',
-            'components': {
-                'conv_engine': {
-                    'type': 'Output-Stationary (OS) convolution array',
-                    'mac_count': conv_macs,
-                    'supported_kernels': ['1×1', '3×3'],
-                    'channels': 'Configurable, up to 256 output channels',
-                },
-                'upsample_unit': {
-                    'type': 'Hardware bilinear interpolation',
-                    'scale_factors': ['2×', '4×'],
-                    'throughput': f'{self.config.pe_cols} pixels/cycle',
-                    'pipeline_stages': 2,
-                    'implementation': '4 multipliers + 3 adders per pixel',
-                },
-                'fusion_unit': {
-                    'type': 'Element-wise addition with optional ReLU',
-                    'throughput': f'{self.config.pe_cols * 4} elements/cycle',
-                },
-            },
-            'local_sram': f'{self.config.l1_sram_bytes_per_engine // 1024} KB',
-            'supported_operations': [
-                '1×1 pointwise convolution',
-                '3×3 depthwise/standard convolution',
-                '2× bilinear upsampling',
-                'Feature addition/concatenation',
-                'ReLU activation',
-            ],
-        }
-
-    def estimate_area_mm2(self, node_nm: int = 28) -> dict:
-        scale = (node_nm / 28) ** 2
-        conv_macs = min(self.config.num_macs, 256)
-
-        return {
-            'conv_engine_mm2': conv_macs * 0.0004 * scale,
-            'upsample_mm2': 0.01 * scale,
-            'l1_sram_mm2': self.config.l1_sram_bytes_per_engine * 0.001 * scale / 1024,
-            'control_mm2': 0.02 * scale,
-            'total_mm2': conv_macs * 0.0004 * scale + 0.01 * scale +
-                        self.config.l1_sram_bytes_per_engine * 0.001 * scale / 1024 + 0.02 * scale,
-        }
-
-
-class AbsoluteDisparityCU:
-    """
-    Absolute Disparity Calibration Unit (ADCU)
-    Converts monocular relative depth to absolute stereo disparity.
-
-    Components:
-    - Sparse matching engine (NCC-based)
-    - Least-squares scale-shift estimator
-    - LUT-based reciprocal unit (1/Z)
-    - B×f multiplier
-    """
-
-    def __init__(self, config: AcceleratorConfig):
-        self.config = config
-
-    def describe(self) -> dict:
-        return {
-            'name': 'Absolute Disparity Calibration Unit (ADCU)',
-            'function': 'Converts relative depth to absolute disparity',
-            'components': {
-                'sparse_matcher': {
-                    'type': 'NCC correlation engine',
-                    'keypoints': 32,
-                    'patch_size': '11×11',
-                    'max_disparity': 192,
-                    'throughput': '1 keypoint/16 cycles',
-                    'total_cycles': 32 * 16,  # = 512 cycles
-                },
-                'scale_shift_estimator': {
-                    'type': 'Hardware least-squares solver',
-                    'problem_size': '32×2 (overdetermined 2×2)',
-                    'operations': 'ATA (2×2), ATb (2×1), 2×2 inverse, solve',
-                    'total_cycles': 64 + 32 + 10,  # Matrix ops + inverse + solve
-                },
-                'reciprocal_lut': {
-                    'type': 'Dual-port SRAM lookup table',
-                    'entries': 4096,
-                    'entry_bits': 16,
-                    'interpolation': 'Linear (2 reads + 1 multiply + 1 add)',
-                    'total_size_bytes': 4096 * 2,
-                },
-                'depth_to_disparity': {
-                    'type': 'Pipelined multiplier',
-                    'pipeline_stages': 3,  # scale → LUT → multiply
-                    'throughput': f'{self.config.pe_cols} pixels/cycle',
-                    'operations': 'Z = α*d_rel + β → 1/Z (LUT) → d = B*f/Z',
-                },
-            },
-            'local_sram': '8 KB (keypoint buffers + LUT)',
-            'total_latency_estimate': {
-                'sparse_matching': '512 cycles',
-                'scale_estimation': '106 cycles',
-                'depth_to_disparity_518x518': f'{518*518//self.config.pe_cols} cycles',
-            },
-        }
-
-    def estimate_area_mm2(self, node_nm: int = 28) -> dict:
-        scale = (node_nm / 28) ** 2
-
-        return {
-            'sparse_matcher_mm2': 0.02 * scale,
-            'least_squares_mm2': 0.005 * scale,
-            'lut_sram_mm2': 4096 * 2 * 0.001 * scale / 1024,  # 8 KB
-            'multipliers_mm2': 0.01 * scale,
-            'control_mm2': 0.005 * scale,
-            'total_mm2': 0.02 + 0.005 + 0.008 + 0.01 + 0.005,
-        }
-
-
-class GlobalMemoryController:
-    """
-    Global Memory Controller
-    Manages L2 shared SRAM and external DRAM access.
-    """
-
-    def __init__(self, config: AcceleratorConfig):
-        self.config = config
-
-    def describe(self) -> dict:
-        return {
-            'name': 'Global Memory Controller',
-            'components': {
-                'l2_sram': {
-                    'capacity': f'{self.config.l2_shared_sram_bytes // 1024} KB',
-                    'banks': self.config.num_l2_banks,
-                    'bank_size': f'{self.config.l2_shared_sram_bytes // self.config.num_l2_banks // 1024} KB',
-                    'ports': '2 read + 1 write',
-                    'bandwidth': f'{self.config.num_l2_banks * 8} bytes/cycle',
-                },
-                'dma_engine': {
-                    'channels': self.config.dma_channels,
-                    'burst_size': f'{self.config.dma_burst_bytes} bytes',
-                    'patterns': ['Linear', '2D tiling', 'Strided'],
-                    'function': 'Prefetch weights and activations from DRAM to L2',
-                },
-                'arbiter': {
-                    'type': 'Round-robin with priority',
-                    'priorities': 'VFE > CSFE > ADCU > DMA',
-                },
-            },
-            'external_interface': {
-                'type': 'LPDDR4x',
-                'bandwidth': f'{self.config.dram_bandwidth_gbps} GB/s',
-                'capacity': f'{self.config.dram_capacity_gb} GB',
-            },
-        }
-
-
-class ControlProcessor:
-    """
-    Control Processor
-    Lightweight RISC-V core for task scheduling and configuration.
-    """
-
-    def describe(self) -> dict:
-        return {
-            'name': 'Control Processor',
-            'type': 'RISC-V RV32I micro-controller',
-            'clock': 'Same as accelerator',
-            'functions': [
-                'Layer scheduling and sequencing',
-                'Engine configuration (dataflow mode, tile sizes)',
-                'DMA programming',
-                'Interrupt handling',
-                'Debug interface',
-            ],
-            'memory': {
-                'instruction_rom': '16 KB',
-                'data_ram': '4 KB',
-            },
-        }
-
-
-class ConfidenceRouterUnit:
-    """
-    Confidence Router Unit (CRU)
-    Routes tokens based on SGM confidence — the core sparsity-aware component.
-
-    Takes the PKRN confidence map (byproduct of ADCU sparse matching),
-    pools it to the token grid (37×37), and generates keep/prune masks.
-    This is a single-cycle comparison: conf[i] > threshold → prune.
-
-    Components:
-    - 1369 parallel comparators (1 per spatial token)
-    - Index generator (compact list of kept token indices)
-    - Small index SRAM buffer (~2 KB)
-    """
-
-    def __init__(self, config: AcceleratorConfig, num_tokens: int = 1369):
-        self.config = config
-        self.num_tokens = num_tokens
-
-    def describe(self) -> dict:
-        return {
-            'name': 'Confidence Router Unit (CRU)',
-            'function': 'SGM-guided token pruning mask generation',
-            'components': {
-                'comparators': {
-                    'count': self.num_tokens,
-                    'type': 'FP16 threshold comparison',
-                    'latency': '1 cycle',
-                },
-                'index_generator': {
-                    'type': 'Parallel prefix-sum compaction',
-                    'latency': '1 cycle',
-                    'output': 'Compact index list of kept tokens',
-                },
-                'index_sram': {
-                    'size_bytes': self.num_tokens * 2,  # ~2.7 KB (INT16 indices)
-                    'purpose': 'Store keep_indices for Gather/Scatter',
-                },
-            },
-            'total_latency': '1 cycle (fully pipelined)',
-            'input': 'Confidence grid (37×37 FP16 from ADCU)',
-            'output': 'keep_mask (1369 bits), keep_indices (M × INT16)',
-        }
-
-    def estimate_area_mm2(self, node_nm: int = 28) -> dict:
-        scale = (node_nm / 28) ** 2
-        comparators = self.num_tokens * 0.000002 * scale  # ~2 um² per FP16 comparator
-        index_logic = 0.001 * scale  # prefix-sum logic
-        index_sram = self.num_tokens * 2 * 0.001 * scale / 1024  # ~2.7 KB
-
-        total = comparators + index_logic + index_sram
-        return {
-            'comparators_mm2': comparators,
-            'index_logic_mm2': index_logic,
-            'index_sram_mm2': index_sram,
-            'total_mm2': total,
-        }
-
+# ---------------------------------------------------------------------------
+# Top-Level Accelerator
+# ---------------------------------------------------------------------------
 
 class EdgeStereoDAv2Accelerator:
     """
-    Top-level accelerator: integrates all engines.
+    Top-level accelerator: Unified SA + 5 SCUs + L2 arbiter.
+
+    Architecture:
+      sa:       UnifiedSystolicArray (WS/OS configurable, 32x32 default)
+      crm:      ConfidenceRoutingModule (SCU-1, merge planner)
+      gsu:      GatherScatterUnit (SCU-2, data steering)
+      dpc:      DualPrecisionController (SCU-3, decoder dual-path)
+      adcu:     AbsoluteDisparityCU (SCU-4, depth calibration)
+      fu:       FusionUnit (SCU-5, pixel ops + bilinear)
+      arbiter:  L2Arbiter (32-bank crossbar)
+      mem:      MemoryHierarchySpec (L0-L3 with SCU L1s)
     """
 
-    def __init__(self, config: AcceleratorConfig = None):
+    def __init__(self, config: AcceleratorConfig | None = None):
         self.config = config or AcceleratorConfig()
-        self.vfe = ViTFeatureEngine(self.config)
-        self.csfe = CrossScaleFusionEngine(self.config)
-        self.adcu = AbsoluteDisparityCU(self.config)
-        self.cru = ConfidenceRouterUnit(self.config)
-        self.mem_ctrl = GlobalMemoryController(self.config)
-        self.ctrl_proc = ControlProcessor()
 
-    def full_spec(self) -> dict:
-        return {
-            'accelerator': 'EdgeStereoDAv2',
-            'config': {
-                'process': f'{self.config.process_node_nm}nm',
-                'clock': f'{self.config.clock_freq_mhz} MHz',
-                'pe_array': f'{self.config.pe_rows}×{self.config.pe_cols}',
-                'peak_tops': f'{self.config.peak_tops:.2f} TOPS (INT8)',
-                'total_sram': f'{self.config.total_sram_kb:.0f} KB',
-            },
-            'engines': {
-                'VFE': self.vfe.describe(),
-                'CSFE': self.csfe.describe(),
-                'ADCU': self.adcu.describe(),
-            },
-            'memory': self.mem_ctrl.describe(),
-            'control': self.ctrl_proc.describe(),
+        # Instantiate all modules
+        self.sa = UnifiedSystolicArray(self.config.sa)
+        self.crm = ConfidenceRoutingModule(self.config.crm)
+        self.gsu = GatherScatterUnit(self.config.gsu)
+        self.dpc = DualPrecisionController(self.config.dpc)
+        self.adcu = AbsoluteDisparityCU(self.config.adcu)
+        self.fu = FusionUnit(self.config.fu)
+        self.arbiter = L2Arbiter(self.config.arbiter)
+        self.mem = MemoryHierarchySpec(self.config.process_node_nm)
+
+        # Module registry for iteration
+        self.modules = {
+            "systolic_array": self.sa,
+            "crm": self.crm,
+            "gsu": self.gsu,
+            "dpc": self.dpc,
+            "adcu": self.adcu,
+            "fu": self.fu,
+            "l2_arbiter": self.arbiter,
         }
 
-    def area_breakdown(self, node_nm: int = None) -> dict:
+    # -- Full specification ---------------------------------------------------
+
+    def full_spec(self) -> dict[str, Any]:
+        cfg = self.config
+        return {
+            "accelerator": "EdgeStereoDAv2",
+            "process": f"{cfg.process_node_nm}nm",
+            "clock": f"{cfg.clock_freq_mhz} MHz",
+            "peak_tops": f"{cfg.peak_tops:.3f} TOPS (INT8)",
+            "sa": self.sa.describe(),
+            "scu": {
+                "crm": self.crm.describe(),
+                "gsu": self.gsu.describe(),
+                "dpc": self.dpc.describe(),
+                "adcu": self.adcu.describe(),
+                "fu": self.fu.describe(),
+            },
+            "interconnect": self.arbiter.describe(),
+            "memory": {
+                "l2_budget": self.mem.spec_c_worst_case_budget(),
+                "scu_l1_total_bytes": self.mem.total_l1_scu_bytes(),
+            },
+        }
+
+    # -- Area breakdown -------------------------------------------------------
+
+    def area_breakdown(self, node_nm: int | None = None) -> dict[str, Any]:
         node = node_nm or self.config.process_node_nm
         scale = (node / 28) ** 2
 
-        vfe = self.vfe.estimate_area_mm2(node)
-        csfe = self.csfe.estimate_area_mm2(node)
-        adcu = self.adcu.estimate_area_mm2(node)
-        cru = self.cru.estimate_area_mm2(node)
+        sa_area = self.sa.estimate_area_mm2(node)
+        crm_area = self.crm.estimate_area_mm2(node)
+        gsu_area = self.gsu.estimate_area_mm2(node)
+        dpc_area = self.dpc.estimate_area_mm2(node)
+        adcu_area = self.adcu.estimate_area_mm2(node)
+        fu_area = self.fu.estimate_area_mm2(node)
+        arbiter_area = self.arbiter.estimate_area_mm2(node)
 
-        l2_sram = self.config.l2_shared_sram_bytes * 0.001 * scale / 1024
-        ctrl = 0.05 * scale
-        io_pads = 0.3 * scale
-        interconnect = 0.1 * scale
+        # SA L1 SRAM
+        sa_l1 = self.mem.levels["L1_SA"].capacity_bytes / 1024 * 0.001 * scale
 
-        total = (vfe['total_mm2'] + csfe['total_mm2'] + adcu['total_mm2'] +
-                 cru['total_mm2'] + l2_sram + ctrl + io_pads + interconnect)
+        # SCU L1 SRAMs
+        scu_l1_total = self.mem.total_l1_scu_bytes() / 1024 * 0.001 * scale
 
-        return {
-            'VFE': vfe['total_mm2'],
-            'CSFE': csfe['total_mm2'],
-            'ADCU': adcu['total_mm2'],
-            'CRU': cru['total_mm2'],
-            'L2_SRAM': l2_sram,
-            'Control': ctrl,
-            'IO_Pads': io_pads,
-            'Interconnect': interconnect,
-            'Total_mm2': total,
-            'node_nm': node,
+        # Control processor
+        ctrl = 0.050 * scale
+
+        # IO pads + interconnect
+        io_inter = 0.400 * scale
+
+        components = {
+            "SA (MACs + sidecars)": sa_area["total_mm2"],
+            "SA L1 SRAM": sa_l1,
+            "CRM": crm_area["total_mm2"],
+            "GSU": gsu_area["total_mm2"],
+            "DPC": dpc_area["total_mm2"],
+            "ADCU": adcu_area["total_mm2"],
+            "FU": fu_area["total_mm2"],
+            "SCU L1 SRAMs": scu_l1_total,
+            "L2 SRAM + crossbar": arbiter_area["total_mm2"],
+            "Control Processor": ctrl,
+            "IO + Interconnect": io_inter,
         }
 
-    def power_estimate(self, node_nm: int = None) -> dict:
-        """Estimate power consumption"""
+        total = sum(components.values())
+        components["Total"] = total
+        components["node_nm"] = node
+
+        return components
+
+    # -- Power estimate -------------------------------------------------------
+
+    def power_estimate(self, node_nm: int | None = None) -> dict[str, Any]:
         node = node_nm or self.config.process_node_nm
         freq = self.config.clock_freq_mhz
 
-        # Dynamic power scaling with technology node
-        # Reference: 28nm at 500MHz
-        # Smaller nodes: lower capacitance and voltage → less power per operation
-        # But density allows more operations. Net: power per operation decreases.
-        # Approximate: dynamic power per op scales as (node/28)^1.1 (Dennard-like)
-        node_scale = (node / 28) ** 1.1
-        freq_scale = freq / 500
+        sa_pwr = self.sa.estimate_power_mw(node, freq)
+        crm_pwr = self.crm.estimate_power_mw(node, freq)
+        gsu_pwr = self.gsu.estimate_power_mw(node, freq)
+        dpc_pwr = self.dpc.estimate_power_mw(node, freq)
+        adcu_pwr = self.adcu.estimate_power_mw(node, freq)
+        fu_pwr = self.fu.estimate_power_mw(node, freq)
+        arb_pwr = self.arbiter.estimate_power_mw(node, freq)
 
-        # Component power estimates (mW at 28nm, 500MHz, 100% utilization)
-        mac_power = self.config.num_macs * 0.15  # ~0.15 mW per MAC at 28nm
-        l1_sram_power = 3 * self.config.l1_sram_bytes_per_engine / 1024 * 0.2  # ~0.2 mW/KB
-        l2_sram_power = self.config.l2_shared_sram_bytes / 1024 * 0.3  # ~0.3 mW/KB
-        control_power = 10  # mW
-        io_power = 30  # mW
+        io_power = 30.0  # mW, relatively constant
 
-        # Scale by node and frequency
-        dynamic = (mac_power + l1_sram_power + l2_sram_power + control_power) * node_scale * freq_scale
-        static = dynamic * 0.1  # Leakage ~10% of dynamic
-        io = io_power  # IO power is relatively constant
+        dynamic = (sa_pwr["total_mw"] + crm_pwr["total_mw"] + gsu_pwr["total_mw"]
+                   + dpc_pwr["total_mw"] + adcu_pwr["total_mw"] + fu_pwr["total_mw"]
+                   + arb_pwr["total_mw"])
+        leakage = dynamic * 0.1
+        total = dynamic + leakage + io_power
 
         return {
-            'mac_array_mW': mac_power * node_scale * freq_scale,
-            'l1_sram_mW': l1_sram_power * node_scale * freq_scale,
-            'l2_sram_mW': l2_sram_power * node_scale * freq_scale,
-            'control_mW': control_power * node_scale * freq_scale,
-            'io_mW': io,
-            'dynamic_mW': dynamic,
-            'static_mW': static,
-            'total_mW': dynamic + static + io,
-            'node_nm': node,
-            'freq_mhz': freq,
+            "sa_mw": sa_pwr["total_mw"],
+            "crm_mw": crm_pwr["total_mw"],
+            "gsu_mw": gsu_pwr["total_mw"],
+            "dpc_mw": dpc_pwr["total_mw"],
+            "adcu_mw": adcu_pwr["total_mw"],
+            "fu_mw": fu_pwr["total_mw"],
+            "arbiter_mw": arb_pwr["total_mw"],
+            "io_mw": io_power,
+            "dynamic_mw": dynamic,
+            "leakage_mw": leakage,
+            "total_mw": total,
+            "node_nm": node,
+            "freq_mhz": freq,
         }
 
-    def performance_estimate(self, total_flops: float = 79e9) -> dict:
-        """Estimate performance metrics"""
-        peak_ops = self.config.peak_tops * 1e12
+    # -- Performance estimate -------------------------------------------------
 
-        # Effective utilization
-        # MHSA: ~85% utilization (good tiling)
-        # MLP: ~90% utilization (large matrices)
-        # Decoder convs: ~70% utilization (smaller)
-        # Overall: ~82% average
+    def estimate_frame_cycles(
+        self,
+        seq_len: int = 1370,
+        embed_dim: int = 384,
+        num_heads: int = 6,
+        depth: int = 12,
+        keep_ratio: float = 1.0,
+        stage_policy: str = "coarse_only",
+        image_h: int = 518,
+        image_w: int = 518,
+    ) -> dict[str, Any]:
+        """
+        Estimate total frame cycles for the full pipeline.
 
-        eff_utilization = 0.82
-        effective_ops = peak_ops * eff_utilization
+        This is a quick analytical estimate (not event-driven simulation).
+        """
+        patch_h = image_h // 14
+        patch_w = image_w // 14
+        merge_seq = max(1, int(seq_len * keep_ratio)) if keep_ratio < 1.0 else seq_len
 
-        latency_s = total_flops / effective_ops
-        fps = 1.0 / latency_s
+        # Patch embedding
+        patch_embed = self.sa.estimate_matmul_cycles(
+            seq_len - 1, 14 * 14 * 3, embed_dim,
+        )
+
+        # CRM (if merge)
+        crm_est = self.crm.estimate_total_cycles(
+            mode="MERGE" if keep_ratio < 1.0 else "PRUNE",
+            image_h=image_h, image_w=image_w,
+            grid_h=patch_h, grid_w=patch_w,
+            keep_ratio=keep_ratio,
+        )
+
+        # Encoder: per-block attention + MLP
+        block_attn = self.sa.estimate_attention_cycles(merge_seq, embed_dim, num_heads)
+        block_mlp = self.sa.estimate_mlp_cycles(seq_len, embed_dim)
+
+        # GSU per block (if merge)
+        if keep_ratio < 1.0:
+            gsu_gather = self.gsu.estimate_gather_cycles(merge_seq)
+            gsu_scatter = self.gsu.estimate_scatter_merge_cycles(seq_len - 1)
+            gsu_per_block = gsu_gather["total_cycles"] + gsu_scatter["total_cycles"]
+        else:
+            gsu_per_block = 0
+
+        encoder_per_block = block_attn["total_cycles"] + block_mlp["total_cycles"] + gsu_per_block
+        encoder_total = encoder_per_block * depth
+
+        # Decoder: sum of all stages (simplified: proj + rn + refine + output)
+        decoder_stages = [
+            ("proj", patch_h, patch_w, embed_dim, 64),
+            ("rn", patch_h, patch_w, 64, 64),
+            ("refine", patch_h, patch_w, 64, 64),
+        ]
+        decoder_total = 0
+        for stage_name, h, w, c_in, c_out in decoder_stages:
+            for scale in [1, 2, 4, 8]:
+                sh, sw = h * scale, w * scale
+                est = self.sa.estimate_conv_cycles(c_in, c_out, sh, sw, kernel_size=3)
+                decoder_total += est["effective_cycles"]
+
+        # DPC overhead
+        dpc_est = self.dpc.estimate_total_cycles(stage_policy, patch_h, patch_w)
+
+        # ADCU
+        adcu_est = self.adcu.estimate_total_cycles(image_h, image_w)
+
+        # Fusion
+        fusion_est = self.fu.estimate_fusion_pipeline_cycles(image_h, image_w)
+
+        # Total (mostly sequential: encoder -> decoder -> ADCU -> fusion)
+        # CRM overlaps with patch_embed
+        crm_overlap = min(crm_est["total_cycles"], patch_embed["effective_cycles"])
+        total = (
+            patch_embed["effective_cycles"]
+            + (crm_est["total_cycles"] - crm_overlap)
+            + encoder_total
+            + decoder_total
+            + dpc_est["total_dpc_overhead_cycles"]
+            + adcu_est["total_cycles"]
+            + fusion_est["total_cycles"]
+        )
+
+        latency_ms = total / (self.config.clock_freq_mhz * 1e3)
+        fps = 1000.0 / latency_ms if latency_ms > 0 else 0
 
         return {
-            'peak_tops': self.config.peak_tops,
-            'effective_utilization': eff_utilization,
-            'effective_tops': self.config.peak_tops * eff_utilization,
-            'latency_ms': latency_s * 1000,
-            'fps': fps,
-            'total_flops_G': total_flops / 1e9,
+            "patch_embed_cycles": patch_embed["effective_cycles"],
+            "crm_cycles": crm_est["total_cycles"],
+            "encoder_per_block_cycles": encoder_per_block,
+            "encoder_total_cycles": encoder_total,
+            "decoder_total_cycles": decoder_total,
+            "dpc_overhead_cycles": dpc_est["total_dpc_overhead_cycles"],
+            "adcu_cycles": adcu_est["total_cycles"],
+            "fusion_cycles": fusion_est["total_cycles"],
+            "total_cycles": total,
+            "latency_ms": round(latency_ms, 2),
+            "fps": round(fps, 2),
+            "keep_ratio": keep_ratio,
+            "stage_policy": stage_policy,
         }
 
 
-def print_accelerator_spec():
-    """Print complete accelerator specification"""
-    # 28nm configuration
-    config_28nm = AcceleratorConfig(
-        process_node_nm=28, clock_freq_mhz=500,
-        pe_rows=32, pe_cols=32
-    )
-    accel_28nm = EdgeStereoDAv2Accelerator(config_28nm)
+# ---------------------------------------------------------------------------
+# Convenience printer
+# ---------------------------------------------------------------------------
 
-    # 7nm configuration
-    config_7nm = AcceleratorConfig(
-        process_node_nm=7, clock_freq_mhz=1000,
-        pe_rows=32, pe_cols=32
-    )
-    accel_7nm = EdgeStereoDAv2Accelerator(config_7nm)
+def print_accelerator_summary(config: AcceleratorConfig | None = None):
+    """Print a formatted accelerator summary."""
+    accel = EdgeStereoDAv2Accelerator(config)
 
-    print("=" * 70)
-    print("EdgeStereoDAv2 Accelerator Specification")
-    print("=" * 70)
+    print("=" * 60)
+    print("EdgeStereoDAv2 Accelerator Summary (SA + 5 SCUs)")
+    print("=" * 60)
 
-    spec = accel_28nm.full_spec()
-    print(f"\nProcess: {spec['config']['process']}")
-    print(f"Clock: {spec['config']['clock']}")
-    print(f"PE Array: {spec['config']['pe_array']}")
-    print(f"Peak Throughput: {spec['config']['peak_tops']}")
-    print(f"Total SRAM: {spec['config']['total_sram']}")
+    cfg = accel.config
+    print(f"\nProcess: {cfg.process_node_nm}nm, Clock: {cfg.clock_freq_mhz} MHz")
+    print(f"Peak throughput: {cfg.peak_tops:.3f} TOPS (INT8)")
+    print(f"SA: {cfg.sa.rows}x{cfg.sa.cols} = {cfg.sa.num_macs} MACs")
 
     # Area
-    print(f"\n--- Area Breakdown ---")
-    for node in [28, 7]:
-        accel = accel_28nm if node == 28 else accel_7nm
-        area = accel.area_breakdown(node)
-        print(f"\n  {node}nm:")
-        for k, v in area.items():
-            if k != 'node_nm' and isinstance(v, float):
-                print(f"    {k}: {v:.3f} mm2")
+    print(f"\n--- Area Breakdown ({cfg.process_node_nm}nm) ---")
+    area = accel.area_breakdown()
+    for k, v in area.items():
+        if isinstance(v, float):
+            print(f"  {k:<25s}: {v:.4f} mm2")
 
     # Power
-    print(f"\n--- Power Estimates ---")
-    for label, accel in [('28nm/500MHz', accel_28nm), ('7nm/1GHz', accel_7nm)]:
-        pwr = accel.power_estimate()
-        print(f"\n  {label}:")
-        print(f"    Dynamic: {pwr['dynamic_mW']:.1f} mW")
-        print(f"    Static: {pwr['static_mW']:.1f} mW")
-        print(f"    IO: {pwr['io_mW']:.1f} mW")
-        print(f"    Total: {pwr['total_mW']:.1f} mW")
+    print(f"\n--- Power Estimate ---")
+    pwr = accel.power_estimate()
+    print(f"  Dynamic: {pwr['dynamic_mw']:.1f} mW")
+    print(f"  Leakage: {pwr['leakage_mw']:.1f} mW")
+    print(f"  IO: {pwr['io_mw']:.1f} mW")
+    print(f"  Total: {pwr['total_mw']:.1f} mW")
+
+    # L2 Budget
+    print(f"\n--- L2 Budget (Spec C worst-case) ---")
+    budget = accel.mem.spec_c_worst_case_budget()
+    for name, size in budget["allocations"].items():
+        print(f"  {name:<30s}: {size // 1024:>4d} KB")
+    print(f"  {'Total':<30s}: {budget['total_bytes'] // 1024:>4d} KB / "
+          f"{budget['capacity_bytes'] // 1024} KB "
+          f"({'OK' if budget['ok'] else 'EXCEEDED!'})")
 
     # Performance
-    print(f"\n--- Performance (79 GFLOPs target model) ---")
-    for label, accel in [('28nm/500MHz', accel_28nm), ('7nm/1GHz', accel_7nm)]:
-        perf = accel.performance_estimate(79e9)
-        print(f"\n  {label}:")
-        print(f"    Peak: {perf['peak_tops']:.2f} TOPS")
-        print(f"    Effective: {perf['effective_tops']:.2f} TOPS ({perf['effective_utilization']*100:.0f}%)")
-        print(f"    Latency: {perf['latency_ms']:.2f} ms")
-        print(f"    FPS: {perf['fps']:.1f}")
+    print(f"\n--- Frame Latency ---")
+    for kr in [1.0, 0.5]:
+        est = accel.estimate_frame_cycles(keep_ratio=kr)
+        label = "dense" if kr == 1.0 else f"merge kr={kr}"
+        print(f"  {label:<20s}: {est['total_cycles']:>12,} cycles = "
+              f"{est['latency_ms']:>7.2f} ms = {est['fps']:>5.2f} FPS")
+
+    # Memory
+    print(f"\n--- Memory ---")
+    print(f"  SA L1: {accel.mem.levels['L1_SA'].capacity_bytes // 1024} KB")
+    print(f"  SCU L1 total: {accel.mem.total_l1_scu_bytes() // 1024} KB")
+    print(f"  L2: {accel.mem.levels['L2_Global'].capacity_bytes // 1024} KB")
 
 
 if __name__ == "__main__":
-    print_accelerator_spec()
+    print_accelerator_summary()
+
+    # 7nm variant
+    print("\n")
+    cfg_7nm = AcceleratorConfig(process_node_nm=7, clock_freq_mhz=1000)
+    print_accelerator_summary(cfg_7nm)

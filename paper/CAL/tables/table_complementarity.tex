@@ -1,0 +1,19 @@
+\begin{table}[t]
+\caption{SGM confidence complementarity on 40 KITTI validation images (tuned SGM, $P_2{=}3.0$).}
+\label{tab:complementarity}
+\centering
+\footnotesize
+\begin{tabular}{@{}lccc@{}}
+\toprule
+\textbf{Band} & \textbf{Coverage} & \textbf{D1-all} & \textbf{EPE} \\
+\midrule
+SGM conf $\geq$ 0.65   & 49.0\% & 7.48\%          & 1.21 \\
+SGM conf $<$ 0.65      & 32.1\% & 20.08\%         & 2.41 \\
+SGM hole (no pred.)    & 18.9\% & ---             & --- \\
+\midrule
+DA2 (uniform)          & 100\%  & ---             & 2.89 \\
+SGM$+$DA2 heuristic    & 100\%  & 15.08\%         & 1.87 \\
+\textbf{SGM$+$DA2 APT+EffViT-B1} & \textbf{100\%} & \textbf{6.43\%} & \textbf{1.15} \\
+\bottomrule
+\end{tabular}
+\end{table}

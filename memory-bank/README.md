@@ -1,7 +1,7 @@
 # memory-bank — 项目记忆库索引
 
-**项目**：SGM-ViT 硬件加速器协同设计（ICCAD 2025 CAL letter + DAC/ICCAD 2026 full paper）  
-**最后更新**：2026-04-20
+**项目**：SGM-ViT 硬件加速器协同设计（CAL 2024 letter [偶 prelim] → **TCAS-I 2026 full journal paper**, 现 Phase 10.11 收尾）  
+**最后更新**：2026-04-22
 
 本目录是项目的长期记忆，面向新人 onboarding 和跨会话一致性维护。所有文件**持续追加不删历史**；每次重大迭代结束要更新对应进度文件。
 
@@ -15,7 +15,7 @@
 | `architecture.md` | **代码/产物地图**：目录、核心文件、artifacts/results 布局 | 想找某个东西在哪 |
 | `design-document.md` | **算法设计**：Phase 1-5 RCF 族 + Phase 6-8 EffViT 端到端 | 想懂为什么这样设计 |
 | `progress.md` | **算法进度日志**：Phase 1-8 的每一步（含失败实验 Fix B/C） | 想看完整迭代历史 |
-| `paper-progress.md` | **CAL letter 投稿跟踪**（4-page IEEE 提交） | 论文团队 |
+| `paper-progress.md` | **TCAS-I 投稿跟踪**（19-page journal, Phase 10.5-10.11, 6 轮 reviewer 迭代记录） | 论文团队 |
 | `hardware-architecture.md` | **硬件侧代码地图** + API 速查 | 想找某个 HW 模块 |
 | `hardware-design-document.md` | **硬件侧正式 spec**（Specs A-D + 11 模块 + 事件驱动仿真器） | 想懂 HW 设计 |
 | `hardware-progress.md` | **硬件侧 Step 1-14 进度日志** | 想看 HW 迭代历史 |
@@ -32,9 +32,11 @@
 
 如果是硬件方向：跳过 3-5，改读 `hardware-architecture.md` → `hardware-design-document.md`。
 
+如果是论文/审稿方向：跳过 3-5，改读 `paper-progress.md` Phase 10.5-10.11（6 轮 reviewer 迭代历史 + D16-D34 决策日志）。
+
 ---
 
-## 当前活跃 mainline 快照（2026-04-20）
+## 当前活跃 mainline 快照（2026-04-22）
 
 ### 算法侧
 - **最强 ckpt**：`artifacts/fusion_phase8_pareto/b2_h48/mixed_finetune/best.pt`  
@@ -44,7 +46,7 @@
 - **极致压缩（FPGA 起点）**：`artifacts/fusion_phase8_pareto/b0_h24/mixed_finetune/best.pt`  
   - **735K params**, 4.95 GFLOPs, avg EPE 1.726（仍 8/8 超 heuristic）
 
-全 6 个 Pareto 变体 **8/8 指标全面超越 heuristic**（4 数据集 × EPE & bad）。
+全 6 个 Pareto 变体在 in-house 评测协议下全部超越 heuristic baseline（4 数据集 × EPE & bad）。
 
 ### 训练数据
 - 主 cache：`artifacts/fusion_cache_v3/`（SF driving 全 8 splits + KITTI/ETH3D/Middlebury）
@@ -57,12 +59,18 @@ python scripts/pareto_analyze.py
 ```
 
 ### 硬件侧
-- 现有 Phase 1-6 HW 仿真器完整（`hardware/` + `simulator/`），跑 Phase 5 RCF pipeline 可用
-- **Phase 9 HW 重构待办**（post-CAL）：详见 `plans/stateful-hatching-spark.md`
+- Phase 10 unified FusionEngineV2 + WeightStreamer + 12-op ISA 完整建模（`hardware/` + `simulator/`）
+- 端到端 pipeline breakdown 已跑通（`scripts/run_simulator_phase10.py`）
+- 两层模型: Tier-1 event-driven simulator (671 行 `simulator/core/event_simulator.py`) + Tier-2 critical-path scheduler (`_estimate_op_cycles`, calibrated 至 Tier-1 内 ±8%)
+- 详见 `hardware-progress.md` + `paper-progress.md` Phase 10.6+
 
-### 论文侧
-- CAL letter：4-page IEEE，2026-04-19 数据完整性审校通过，见 `paper-progress.md`
-- 主论文草稿：`paper/EdgeStereoDAv2_ICCAD.md`
+### 论文侧（最新, 2026-04-22）
+- **TCAS-I journal 投稿稿**：`paper/tcasi/main.pdf` (19 页 / 1.70 MB / 0 errors / 0 undefined refs)
+- 标题: *EdgeStereoDAv2: A Confidence-Centric Stereo-Mono Fusion Accelerator for Edge Depth Estimation*
+- **6 轮 reviewer 迭代**已收敛: aware track Reject→Major→AcceptWithMinor→Accept, cold-eyes track Major→Minor→AcceptWithMinor
+- Phase 10.5-10.11 完整迭代日志见 `paper-progress.md`
+- Camera-ready follow-up (非阻塞): F2 W-CAPS vs layer-wise head-to-head, F3 trained per-stage uncertainty head 替换 A1 V2 Sobel surrogate, F4 编译器-regenerated A3 leave-one-out
+- 主论文 ICCAD 草稿（备份）: `paper/EdgeStereoDAv2_ICCAD.md`
 
 ---
 

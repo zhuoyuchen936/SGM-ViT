@@ -1,0 +1,34 @@
+% Ablation A1 — Confidence-Signal Unification
+% Data source: results/ablation_a1/{V0,V1,V2,V3}/summary.json + area.json
+\begin{table}[tb]
+\caption{Ablation A1 --- confidence-signal unification. All variants use the same
+EffViT-B1-h24 FP32 checkpoint; only the confidence signal provided to the 5 SCUs
+differs. The last column is the estimated control-logic area (\S\ref{sec:scu})
+relative to V0's 0.148\,mm$^2$ 5-SCU budget (\S\ref{sec:die_area}).
+\textbf{Note:} the control-area numbers in the last column are \emph{modeled estimates}
+from \texttt{scripts/ablation\_a1\_area\_accounting.py}, which uses engineer-derived
+multiplier coefficients (e.g., 2.5$\times$ for an independent signal generator over a
+local transform, 3.5$\times$ FSM cost for $n{=}4$ independent signals) and is \emph{not} a
+synthesis flow; see Sec.~\ref{sec:limitations} L2.}
+\label{tab:a1}
+\centering
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{|l|c|c|c|c|c|}
+\hline
+\textbf{Variant}
+ & \textbf{KITTI}  & \textbf{SF}     & \textbf{ETH3D}  & \textbf{Mid.\ }  & \textbf{Ctrl} \\
+ & \textbf{EPE/D1} & \textbf{EPE/bad1} & \textbf{EPE/bad1} & \textbf{EPE/bad2} & \textbf{area} \\
+\hline
+\textbf{V0 (Ours, unified)}   & \textbf{1.16 / 6.40\%} & \textbf{3.17 / 45.00\%} & 0.66 / 16.02\% & 1.81 / 21.83\% & \textbf{0.148\,mm$^2$} \\
+V1 (random mask)              & 1.30 / 7.26\%        & 3.57 / 60.25\%        & 0.65 / 14.45\% & 1.84 / 21.45\% & 0.148\,mm$^2$ \\
+V2 (per-SCU independent)      & 1.17 / 6.55\%        & 3.22 / 46.36\%        & 0.69 / 16.71\% & 1.85 / 22.36\% & $+$0.032\,mm$^2$ \\
+V3 (uniform, no conf)         & 1.23 / 7.20\%        & 3.44 / 51.31\%        & 0.65 / 14.76\% & \textbf{1.74 / 20.48\%} & 0.145\,mm$^2$ \\
+\hline
+\multicolumn{6}{|l|}{\footnotesize V0 vs V1: $+0.14$ EPE / $+15.3$\,pp bad1 on SF when the same-density} \\
+\multicolumn{6}{|l|}{\footnotesize signal is randomized --- the conf content is load-bearing.} \\
+\multicolumn{6}{|l|}{\footnotesize V0 vs V2: V0 matches V2 accuracy within $1.9$--$4.3$\% relative on all} \\
+\multicolumn{6}{|l|}{\footnotesize datasets while saving $1.7$\% of total die area (21.9\% of SCU budget).} \\
+\hline
+\end{tabular}
+\end{table}

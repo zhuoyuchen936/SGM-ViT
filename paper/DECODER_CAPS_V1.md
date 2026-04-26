@@ -218,6 +218,56 @@ More specifically:
 - an aggressive bit-width drop (`INT4`) needs spatial protection,
 - and the fine decoder should not be the primary quantization target.
 
+## High-Precision Branch INT8 Smoke
+
+To test whether the high-precision decoder branch still needs FP32, we extended the
+weight-aware W-CAPS path so that the high-precision branch can also use a
+weight-quantized decoder copy.
+
+This smoke test keeps the rest of the pipeline fixed:
+
+- encoder: `merge`
+- keep ratio: `0.814`
+- stage policy: `coarse_only`
+- high-precision ratio: `0.75`
+- low branch: `INT4`
+- datasets: `KITTI 12` and `SceneFlow 12`
+
+The compared settings are:
+
+- `FP32 + INT4`: current baseline
+- `INT8 + INT4`: candidate replacement for the FP32 high branch
+- `INT8 only`: both high and low branch set to `INT8`, to test whether dual-path mixing still matters
+
+| Dataset | Config | Dense EPE | Dense D1 (%) | Fused EPE | Fused D1 (%) |
+|--------|--------|-----------|--------------|-----------|--------------|
+| KITTI-12 | FP32 + INT4 | 2.5311 | 25.8891 | 2.0689 | 18.8587 |
+| KITTI-12 | INT8 + INT4 | 2.5350 | 25.9163 | 2.0716 | 18.8936 |
+| KITTI-12 | INT8 only | 2.5204 | 26.0267 | 2.0761 | 19.0714 |
+| SceneFlow-12 | FP32 + INT4 | 5.1348 | - | 3.8504 | - |
+| SceneFlow-12 | INT8 + INT4 | 5.1264 | - | 3.8442 | - |
+| SceneFlow-12 | INT8 only | 4.8891 | - | 3.6394 | - |
+
+Interpretation:
+
+- On `KITTI-12`, `INT8 + INT4` is effectively tied with `FP32 + INT4`.
+  - Fused EPE delta: `+0.0028`
+  - Fused D1 delta: `+0.0348`
+- On `SceneFlow-12`, `INT8 + INT4` is also effectively tied and is slightly better on fused EPE.
+  - Fused EPE delta: `-0.0062`
+- `INT8 only` does not collapse on either dataset.
+  - It is slightly worse than `FP32 + INT4` on `KITTI-12`
+  - It is noticeably better than `FP32 + INT4` on this `SceneFlow-12` smoke split
+
+The current conclusion is:
+
+`For the coarse decoder W-CAPS path, the high-precision branch does not appear to strictly require FP32. INT8 is close enough to justify a larger validation run.`
+
+However, this remains a smoke result only. It should not yet be interpreted as a
+deployment-speedup claim, because the current implementation still uses PyTorch
+floating-point kernels with weight quantization as a numerical proxy rather than a
+true hardware INT8 kernel.
+
 This is a much stronger and cleaner result than the encoder-side adaptive-precision
 prototype, where even confidence-aware precision could not recover the merge baseline.
 

@@ -1,0 +1,21 @@
+\begin{table}[t]
+\caption{End-to-end accuracy and efficiency at the operating point (EffViT-B1-h24 INT8, kr=0.5, hp=50\%, full APT on reconfigurable SA; 28\,nm/500\,MHz, 384$\times$768). ETH3D, Middlebury, and a same-protocol SOTA comparison are deferred to the companion TCAS-I submission.}
+\label{tab:main}
+\centering
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}lcccccc@{}}
+\toprule
+Variant & \multicolumn{2}{c}{KITTI} & \multicolumn{2}{c}{SceneFlow} & FPS & Power \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}
+        & EPE & D1\% & EPE & bad1\% & & (mW) \\
+\midrule
+Heuristic FU baseline         & 1.87 & 15.08 & 3.26 & 71.2 & 11.4 & 435 \\
+APT-density-only (TM, kr=0.5) & 2.59 & 25.76 & 6.15 & 78.2 & 11.4 & 435 \\
+\textbf{Ours (full APT)}      & \textbf{1.15} & \textbf{6.43} & \textbf{2.81} & \textbf{62.4} & \textbf{40} & \textbf{172} \\
+\bottomrule
+\end{tabular}
+\begin{flushleft}\scriptsize
+Core area 1.87\,mm$^2$ (28\,nm). ``Ours'' row includes the reconfigurable SA, depthwise sidecar, and APT engine; heuristic baseline disables APT and uses the fixed-dataflow SA path.
+\end{flushleft}
+\end{table}

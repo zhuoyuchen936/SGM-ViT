@@ -37,7 +37,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
-from core.adaptive_precision import fake_quantize_tensor
+from core.token_merge import fake_quantize_tensor
 
 
 def gas_block_forward(

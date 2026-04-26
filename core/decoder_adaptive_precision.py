@@ -19,7 +19,7 @@ import torch
 import torch.nn.functional as F
 import torch.nn as nn
 
-from .adaptive_precision import fake_quantize_tensor
+from .token_merge import fake_quantize_tensor
 
 
 def _normalize_map(x: np.ndarray) -> np.ndarray:
@@ -355,78 +355,103 @@ def run_dpt_decoder_with_weight_adaptive_precision(
     patch_w: int,
     sensitivity_map: np.ndarray,
     high_precision_ratio: float,
+    high_precision_depth_head=None,
+    high_precision_bits: int | None = None,
+    low_precision_bits: int = 4,
     stage_policy: str = "coarse_only",
 ) -> torch.Tensor:
     """
     Weight-aware dual-path decoder prototype.
 
     Each selected stage computes:
-    - FP32 output using the original decoder weights
-    - low-precision output using a weight-quantized decoder copy
+    - high-precision output using the original decoder weights or a
+      weight-quantized high-precision copy
+    - low-precision output using a weight-quantized low-precision copy
 
     The two outputs are then mixed spatially with the high-precision mask.
     This is closer to a kernel-level dual-path realization than the earlier
     activation-only proxy.
     """
+    hp_depth_head = high_precision_depth_head if high_precision_depth_head is not None else depth_head
+    lp_depth_head = quantized_depth_head
+
     out = []
     for i, feat in enumerate(out_features):
         if depth_head.use_clstoken:
             x_fp, cls_token = feat[0], feat[1]
-            x_lp = x_fp
             readout = cls_token.unsqueeze(1).expand_as(x_fp)
             x_fp = depth_head.readout_projects[i](torch.cat((x_fp, readout), -1))
-            x_lp = quantized_depth_head.readout_projects[i](torch.cat((x_lp, readout), -1))
+            x_lp = lp_depth_head.readout_projects[i](torch.cat((feat[0], readout), -1))
+            x_hp = hp_depth_head.readout_projects[i](torch.cat((feat[0], readout), -1)) if hp_depth_head is not depth_head else x_fp
         else:
             x_fp = feat[0]
+            x_hp = x_fp
             x_lp = x_fp
 
         x_fp = x_fp.permute(0, 2, 1).reshape((x_fp.shape[0], x_fp.shape[-1], patch_h, patch_w))
+        x_hp = x_hp.permute(0, 2, 1).reshape((x_hp.shape[0], x_hp.shape[-1], patch_h, patch_w))
         x_lp = x_lp.permute(0, 2, 1).reshape((x_lp.shape[0], x_lp.shape[-1], patch_h, patch_w))
 
         fp_stage = depth_head.resize_layers[i](depth_head.projects[i](x_fp))
+        hp_stage = hp_depth_head.resize_layers[i](hp_depth_head.projects[i](x_hp))
         tag = f"proj_{i + 1}"
         if should_apply_decoder_precision(tag, stage_policy):
-            lp_stage = quantized_depth_head.resize_layers[i](quantized_depth_head.projects[i](x_lp))
+            lp_stage = lp_depth_head.resize_layers[i](lp_depth_head.projects[i](x_lp))
             mask = build_stage_high_precision_mask(
                 sensitivity_map,
-                target_hw=fp_stage.shape[2:],
+                target_hw=hp_stage.shape[2:],
                 high_precision_ratio=high_precision_ratio,
-            ).to(fp_stage.device)
-            stage = blend_spatial_outputs(fp_stage, lp_stage, mask)
+            ).to(hp_stage.device)
+            stage = blend_spatial_outputs(hp_stage, lp_stage, mask)
         else:
             stage = fp_stage
         out.append(stage)
 
     layer_1, layer_2, layer_3, layer_4 = out
 
-    def _blend_module(tag: str, fp_module: nn.Module, lp_module: nn.Module, x, *args, **kwargs):
+    def _blend_module(
+        tag: str,
+        fp_module: nn.Module,
+        hp_module: nn.Module,
+        lp_module: nn.Module,
+        x,
+        *args,
+        **kwargs,
+    ):
         fp_out = fp_module(x, *args, **kwargs) if callable(getattr(fp_module, "forward", None)) else fp_module(x)
         if not should_apply_decoder_precision(tag, stage_policy):
             return fp_out
+        hp_out = (
+            hp_module(x, *args, **kwargs)
+            if hp_module is not fp_module
+            else fp_out
+        )
         lp_out = lp_module(x, *args, **kwargs) if callable(getattr(lp_module, "forward", None)) else lp_module(x)
         mask = build_stage_high_precision_mask(
             sensitivity_map,
-            target_hw=fp_out.shape[2:],
+            target_hw=hp_out.shape[2:],
             high_precision_ratio=high_precision_ratio,
-        ).to(fp_out.device)
-        return blend_spatial_outputs(fp_out, lp_out, mask)
+        ).to(hp_out.device)
+        return blend_spatial_outputs(hp_out, lp_out, mask)
 
-    layer_1_rn = _blend_module("rn_1", depth_head.scratch.layer1_rn, quantized_depth_head.scratch.layer1_rn, layer_1)
-    layer_2_rn = _blend_module("rn_2", depth_head.scratch.layer2_rn, quantized_depth_head.scratch.layer2_rn, layer_2)
-    layer_3_rn = _blend_module("rn_3", depth_head.scratch.layer3_rn, quantized_depth_head.scratch.layer3_rn, layer_3)
-    layer_4_rn = _blend_module("rn_4", depth_head.scratch.layer4_rn, quantized_depth_head.scratch.layer4_rn, layer_4)
+    layer_1_rn = _blend_module("rn_1", depth_head.scratch.layer1_rn, hp_depth_head.scratch.layer1_rn, lp_depth_head.scratch.layer1_rn, layer_1)
+    layer_2_rn = _blend_module("rn_2", depth_head.scratch.layer2_rn, hp_depth_head.scratch.layer2_rn, lp_depth_head.scratch.layer2_rn, layer_2)
+    layer_3_rn = _blend_module("rn_3", depth_head.scratch.layer3_rn, hp_depth_head.scratch.layer3_rn, lp_depth_head.scratch.layer3_rn, layer_3)
+    layer_4_rn = _blend_module("rn_4", depth_head.scratch.layer4_rn, hp_depth_head.scratch.layer4_rn, lp_depth_head.scratch.layer4_rn, layer_4)
 
     path_4 = _blend_module(
         "path_4",
         depth_head.scratch.refinenet4,
-        quantized_depth_head.scratch.refinenet4,
+        hp_depth_head.scratch.refinenet4,
+        lp_depth_head.scratch.refinenet4,
         layer_4_rn,
         size=layer_3_rn.shape[2:],
     )
     path_3 = _blend_module(
         "path_3",
         depth_head.scratch.refinenet3,
-        quantized_depth_head.scratch.refinenet3,
+        hp_depth_head.scratch.refinenet3,
+        lp_depth_head.scratch.refinenet3,
         path_4,
         layer_3_rn,
         size=layer_2_rn.shape[2:],
@@ -434,7 +459,8 @@ def run_dpt_decoder_with_weight_adaptive_precision(
     path_2 = _blend_module(
         "path_2",
         depth_head.scratch.refinenet2,
-        quantized_depth_head.scratch.refinenet2,
+        hp_depth_head.scratch.refinenet2,
+        lp_depth_head.scratch.refinenet2,
         path_3,
         layer_2_rn,
         size=layer_1_rn.shape[2:],
@@ -442,7 +468,8 @@ def run_dpt_decoder_with_weight_adaptive_precision(
     path_1 = _blend_module(
         "path_1",
         depth_head.scratch.refinenet1,
-        quantized_depth_head.scratch.refinenet1,
+        hp_depth_head.scratch.refinenet1,
+        lp_depth_head.scratch.refinenet1,
         path_2,
         layer_1_rn,
     )
@@ -455,7 +482,14 @@ def run_dpt_decoder_with_weight_adaptive_precision(
         align_corners=True,
     )
     if should_apply_decoder_precision("output", stage_policy):
-        out_lp = quantized_depth_head.scratch.output_conv1(path_1)
+        out_hp = hp_depth_head.scratch.output_conv1(path_1)
+        out_hp = F.interpolate(
+            out_hp,
+            (int(patch_h * 14), int(patch_w * 14)),
+            mode="bilinear",
+            align_corners=True,
+        )
+        out_lp = lp_depth_head.scratch.output_conv1(path_1)
         out_lp = F.interpolate(
             out_lp,
             (int(patch_h * 14), int(patch_w * 14)),
@@ -464,10 +498,10 @@ def run_dpt_decoder_with_weight_adaptive_precision(
         )
         mask = build_stage_high_precision_mask(
             sensitivity_map,
-            target_hw=out_fp.shape[2:],
+            target_hw=out_hp.shape[2:],
             high_precision_ratio=high_precision_ratio,
-        ).to(out_fp.device)
-        out = blend_spatial_outputs(out_fp, out_lp, mask)
+        ).to(out_hp.device)
+        out = blend_spatial_outputs(out_hp, out_lp, mask)
     else:
         out = out_fp
 

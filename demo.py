@@ -18,7 +18,7 @@ from core.decoder_adaptive_precision import (  # noqa: E402
     build_decoder_sensitivity_map,
     build_stage_high_precision_mask,
 )
-from core.fusion import fuse_dispatch, fuse_edge_aware_residual  # noqa: E402
+from core.fusion import FUSION_STRATEGIES, fuse_dispatch, fuse_edge_aware_residual  # noqa: E402
 from core.pipeline import (  # noqa: E402
     DA2_MODEL_CONFIGS,
     align_depth_to_sgm,
@@ -47,12 +47,14 @@ from scripts.common_config import (  # noqa: E402
 try:  # noqa: E402
     from core.fusion_net import (
         build_fusion_inputs,
+        get_fusion_checkpoint_metadata,
         get_fusion_net_runtime_config,
         load_fusion_net,
         run_fusion_net_refinement,
     )
 except ImportError:  # pragma: no cover - optional module on some machines
     build_fusion_inputs = None
+    get_fusion_checkpoint_metadata = None
     get_fusion_net_runtime_config = None
     load_fusion_net = None
     run_fusion_net_refinement = None
@@ -308,13 +310,41 @@ def run_demo(args: argparse.Namespace) -> None:
             "alpha_eff": zeros,
         }
 
+    fusion_inputs = None
+    region_stable_base = wcaps_aligned.astype(np.float32)
+    heuristic_v2 = fused_wcaps.astype(np.float32)
+    conf_region = conf_for_fuse.astype(np.float32)
+    alpha_region = fusion_debug["alpha_eff"].astype(np.float32)
+    flat_region_mask = np.zeros_like(fused_wcaps, dtype=np.float32)
+    absolute_base = region_stable_base
+    mono_high_vis = np.zeros_like(fused_wcaps, dtype=np.float32)
+    if build_fusion_inputs is not None:
+        fusion_inputs = build_fusion_inputs(
+            image_bgr=left_bgr,
+            mono_disp_aligned=wcaps_aligned,
+            sgm_disp=sgm_for_fuse,
+            confidence_map=conf_for_fuse,
+            fused_base=fused_wcaps,
+            detail_score=fusion_debug["detail_score"],
+            base_variant="region_stable_v2",
+        )
+        region_stable_base = fusion_inputs.region_stable_base.astype(np.float32)
+        heuristic_v2 = fusion_inputs.heuristic_v2.astype(np.float32)
+        conf_region = fusion_inputs.conf_region.astype(np.float32)
+        alpha_region = fusion_inputs.alpha_region.astype(np.float32)
+        flat_region_mask = fusion_inputs.flat_region_mask.astype(np.float32)
+        absolute_base = fusion_inputs.region_stable_base.astype(np.float32)
+        mono_high_vis = (fusion_inputs.mono_high * fusion_inputs.disp_scale).astype(np.float32)
+
     fused_refined = None
     fusion_residual = None
     heuristic_vs_net_diff = None
+    fusion_net_debug: dict[str, np.ndarray] = {}
     if args.fusion_backend == "net":
         if (
             load_fusion_net is None
             or build_fusion_inputs is None
+            or get_fusion_checkpoint_metadata is None
             or get_fusion_net_runtime_config is None
             or run_fusion_net_refinement is None
         ):
@@ -326,28 +356,34 @@ def run_demo(args: argparse.Namespace) -> None:
                 f"FusionNet weights not found: {args.fusion_net_weights}\n"
                 "Pass --fusion-net-weights or keep --fusion-backend heuristic."
             )
+        fusion_metadata = get_fusion_checkpoint_metadata(args.fusion_net_weights)
         fusion_net_cfg = get_fusion_net_runtime_config(args.fusion_net_weights)
+        net_arch = str(fusion_metadata["arch"])
+        net_base_variant = "region_stable_v2" if net_arch == "detail_restore_v2" else "heuristic_v1"
         fusion_net = load_fusion_net(
             args.fusion_net_weights,
             device,
-            max_residual_scale=float(fusion_net_cfg["max_residual_scale"]),
+            arch=net_arch,
+            model_cfg=dict(fusion_metadata["model_cfg"]),
         )
-        fusion_inputs = build_fusion_inputs(
-            image_bgr=left_bgr,
-            mono_disp_aligned=wcaps_aligned,
-            sgm_disp=sgm_for_fuse,
-            confidence_map=conf_for_fuse,
-            fused_base=fused_wcaps,
-            detail_score=fusion_debug["detail_score"],
-        )
-        fused_refined, fusion_residual = run_fusion_net_refinement(
+        assert fusion_inputs is not None
+        if net_base_variant != "region_stable_v2":
+            fusion_inputs = build_fusion_inputs(
+                image_bgr=left_bgr,
+                mono_disp_aligned=wcaps_aligned,
+                sgm_disp=sgm_for_fuse,
+                confidence_map=conf_for_fuse,
+                fused_base=fused_wcaps,
+                detail_score=fusion_debug["detail_score"],
+                base_variant=net_base_variant,
+            )
+        fused_refined, fusion_residual, fusion_net_debug = run_fusion_net_refinement(
             fusion_net,
             fusion_inputs,
             device=device,
-            apply_anchor_gate=bool(fusion_net_cfg["apply_anchor_gate"]),
-            anchor_gate_strength=float(fusion_net_cfg["anchor_gate_strength"]),
+            anchor_suppression=float(fusion_net_cfg["anchor_suppression"]),
         )
-        heuristic_vs_net_diff = np.abs(fused_refined - fused_wcaps).astype(np.float32)
+        heuristic_vs_net_diff = np.abs(fused_refined - heuristic_v2).astype(np.float32)
 
     sensitivity_map = build_decoder_sensitivity_map(
         conf_map=confidence_map,
@@ -370,6 +406,8 @@ def run_demo(args: argparse.Namespace) -> None:
         wcaps_aligned,
         fused_merge,
         fused_wcaps,
+        heuristic_v2,
+        absolute_base,
     ]
     if fused_refined is not None:
         disparity_display_maps.append(fused_refined)
@@ -416,11 +454,19 @@ def run_demo(args: argparse.Namespace) -> None:
 
     p8 = resize_to_match(colorize_disparity_shared(fused_wcaps, display_vmin, display_vmax), left_bgr)
     save_panel(p8, os.path.join(args.out_dir, "09_heuristic_fused_wcaps.png"), "Fused SGM + W-CAPS (shared scale)")
-    panels.append(("Fused W-CAPS", p8))
+    panels.append(("Heuristic v1", p8))
+
+    p8a = resize_to_match(colorize_disparity_shared(absolute_base, display_vmin, display_vmax), left_bgr)
+    save_panel(p8a, os.path.join(args.out_dir, "10_absolute_base.png"), "Region-stable absolute base")
+    panels.append(("absolute_base", p8a))
+
+    p8aa = resize_to_match(colorize_disparity_shared(heuristic_v2, display_vmin, display_vmax), left_bgr)
+    save_panel(p8aa, os.path.join(args.out_dir, "11_heuristic_v2.png"), "Heuristic v2 (region-stable detail)")
+    panels.append(("Heuristic v2", p8aa))
 
     if fused_refined is not None and fusion_residual is not None and heuristic_vs_net_diff is not None:
         p8b = resize_to_match(colorize_disparity_shared(fused_refined, display_vmin, display_vmax), left_bgr)
-        save_panel(p8b, os.path.join(args.out_dir, "10_fusion_net_refined.png"), "FusionNet refined (shared scale)")
+        save_panel(p8b, os.path.join(args.out_dir, "12_fusion_net_refined.png"), "FusionNet refined (shared scale)")
         panels.append(("FusionNet refined", p8b))
 
         residual_vis = np.abs(fusion_residual).astype(np.float32)
@@ -428,35 +474,75 @@ def run_demo(args: argparse.Namespace) -> None:
             colorize(residual_vis, cmap="hot", vmin=0.0, vmax=float(np.percentile(residual_vis, 99.0)) + 1e-8),
             left_bgr,
         )
-        save_panel(p8c, os.path.join(args.out_dir, "11_fusion_net_residual.png"), "FusionNet residual |r|")
+        save_panel(p8c, os.path.join(args.out_dir, "13_fusion_net_residual.png"), "FusionNet residual |r|")
         panels.append(("Residual map", p8c))
 
         p8d = resize_to_match(
             colorize(heuristic_vs_net_diff, cmap="hot", vmin=0.0, vmax=float(np.percentile(heuristic_vs_net_diff, 99.0)) + 1e-8),
             left_bgr,
         )
-        save_panel(p8d, os.path.join(args.out_dir, "12_heuristic_vs_net_diff.png"), "|heuristic - net|")
+        save_panel(p8d, os.path.join(args.out_dir, "14_heuristic_vs_net_diff.png"), "|heuristic_v2 - net|")
         panels.append(("Heuristic vs net", p8d))
 
+        if "detail_mask_eff" in fusion_net_debug:
+            p8e = resize_to_match(colorize(fusion_net_debug["detail_mask_eff"], cmap="viridis", vmin=0.0, vmax=1.0), left_bgr)
+            save_panel(p8e, os.path.join(args.out_dir, "15_detail_mask_eff.png"), "FusionNet v2 detail_mask_eff")
+            panels.append(("detail_mask", p8e))
+        if "mono_restore_term" in fusion_net_debug:
+            mono_restore_abs = np.abs(fusion_net_debug["mono_restore_term"]).astype(np.float32)
+            p8f = resize_to_match(
+                colorize(mono_restore_abs, cmap="hot", vmin=0.0, vmax=float(np.percentile(mono_restore_abs, 99.0)) + 1e-8),
+                left_bgr,
+            )
+            save_panel(p8f, os.path.join(args.out_dir, "16_mono_restore_term.png"), "FusionNet v2 mono_restore_term |.|")
+            panels.append(("mono_restore", p8f))
+        if "tiny_residual_term" in fusion_net_debug:
+            tiny_res_abs = np.abs(fusion_net_debug["tiny_residual_term"]).astype(np.float32)
+            p8g = resize_to_match(
+                colorize(tiny_res_abs, cmap="hot", vmin=0.0, vmax=float(np.percentile(tiny_res_abs, 99.0)) + 1e-8),
+                left_bgr,
+            )
+            save_panel(p8g, os.path.join(args.out_dir, "17_tiny_residual_term.png"), "FusionNet v2 tiny_residual_term |.|")
+            panels.append(("tiny_residual", p8g))
+
     p9 = resize_to_match(colorize(hp_mask, cmap="viridis", vmin=0.0, vmax=1.0), left_bgr)
-    save_panel(p9, os.path.join(args.out_dir, "13_wcaps_hp_mask.png"), "W-CAPS high-precision mask")
+    save_panel(p9, os.path.join(args.out_dir, "18_wcaps_hp_mask.png"), "W-CAPS high-precision mask")
     panels.append(("HP mask", p9))
 
     p10 = resize_to_match(colorize(diff_merge_wcaps, cmap="hot", vmin=0.0, vmax=diff_merge_wcaps.max() + 1e-8), left_bgr)
-    save_panel(p10, os.path.join(args.out_dir, "14_diff_merge_vs_wcaps.png"), "|Merge - W-CAPS|")
+    save_panel(p10, os.path.join(args.out_dir, "19_diff_merge_vs_wcaps.png"), "|Merge - W-CAPS|")
     panels.append(("|Merge-W-CAPS|", p10))
 
     p11 = resize_to_match(colorize(fusion_debug["detail_score"], cmap="viridis", vmin=0.0, vmax=1.0), left_bgr)
-    save_panel(p11, os.path.join(args.out_dir, "15_detail_score.png"), "edge_aware_residual detail_score")
+    save_panel(p11, os.path.join(args.out_dir, "20_detail_score.png"), "detail_score")
     panels.append(("detail_score", p11))
 
     p12 = resize_to_match(colorize(fusion_debug["alpha_conf"], cmap="magma", vmin=0.0, vmax=1.0), left_bgr)
-    save_panel(p12, os.path.join(args.out_dir, "16_alpha_conf.png"), "edge_aware_residual alpha_conf")
+    save_panel(p12, os.path.join(args.out_dir, "21_alpha_conf.png"), "raw alpha_conf")
     panels.append(("alpha_conf", p12))
 
     p13 = resize_to_match(colorize(fusion_debug["alpha_eff"], cmap="magma", vmin=0.0, vmax=1.0), left_bgr)
-    save_panel(p13, os.path.join(args.out_dir, "17_alpha_eff.png"), "edge_aware_residual alpha_eff")
+    save_panel(p13, os.path.join(args.out_dir, "22_alpha_eff.png"), "heuristic v1 alpha_eff")
     panels.append(("alpha_eff", p13))
+
+    p14 = resize_to_match(colorize(conf_region, cmap="magma", vmin=0.0, vmax=1.0), left_bgr)
+    save_panel(p14, os.path.join(args.out_dir, "23_conf_region.png"), "region-stable confidence")
+    panels.append(("conf_region", p14))
+
+    p15 = resize_to_match(colorize(alpha_region, cmap="magma", vmin=0.0, vmax=1.0), left_bgr)
+    save_panel(p15, os.path.join(args.out_dir, "24_alpha_region.png"), "region-stable alpha")
+    panels.append(("alpha_region", p15))
+
+    p16 = resize_to_match(colorize(flat_region_mask, cmap="viridis", vmin=0.0, vmax=1.0), left_bgr)
+    save_panel(p16, os.path.join(args.out_dir, "25_flat_region_mask.png"), "flat_region_mask")
+    panels.append(("flat_region", p16))
+
+    p17 = resize_to_match(
+        colorize(np.abs(mono_high_vis), cmap="hot", vmin=0.0, vmax=float(np.percentile(np.abs(mono_high_vis), 99.0)) + 1e-8),
+        left_bgr,
+    )
+    save_panel(p17, os.path.join(args.out_dir, "26_mono_high.png"), "mono_high |.|")
+    panels.append(("mono_high", p17))
 
     build_summary_figure(panels, os.path.join(args.out_dir, "00_summary.png"), ncol=4)
 
@@ -487,7 +573,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--conf-sigma", type=float, default=DEFAULT_CONF_SIGMA)
     parser.add_argument("--align-conf-threshold", type=float, default=DEFAULT_ALIGN_CONF_THRESHOLD)
     parser.add_argument("--no-align", action="store_true")
-    parser.add_argument("--fusion-strategy", default="edge_aware_residual", choices=["edge_aware_residual"])
+    parser.add_argument("--fusion-strategy", default="edge_aware_residual", choices=sorted(FUSION_STRATEGIES.keys()))
     parser.add_argument("--theta-low", type=float, default=DEFAULT_EDGE_THETA_LOW)
     parser.add_argument("--theta-high", type=float, default=DEFAULT_EDGE_THETA_HIGH)
     parser.add_argument("--detail-suppression", type=float, default=DEFAULT_EDGE_DETAIL_SUPPRESSION)

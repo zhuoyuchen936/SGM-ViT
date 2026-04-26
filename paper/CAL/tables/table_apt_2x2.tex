@@ -1,0 +1,21 @@
+% Adapted from tcasi/table_tm_wcaps_2x2.tex; TM relabeled APT-density, W-CAPS relabeled APT-precision.
+\begin{table}[t]
+\caption{APT 2$\times$2 factorial on the DPT-decoder path (DA2 ViT-S + DPT + heuristic FU, FP32, 384$\times$768, 28\,nm/500\,MHz). APT-precision alone is nearly a no-op; its value emerges only with APT-density, where it recovers roughly half of the density-induced D1 loss. The two axes are complementary, not additive.}
+\label{tab:apt_2x2}
+\centering
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}lccrrc@{}}
+\toprule
+Config & Dens. & Prec. & GFLOPs & FPS & KITTI EPE/D1\% \\
+\midrule
+Neither         & --         & --         & 122.6 & 7.80  & 2.27/20.79 \\
+Density-only    & \checkmark & --         & 81.5  & 11.37 & 2.59/25.76 \\
+Precision-only  & --         & \checkmark & 132.3 & 7.24  & 2.28/20.90$^\ddagger$ \\
+\textbf{Both}   & \checkmark & \checkmark & 91.2  & 10.21 & 2.43/23.50$^\ddagger$ \\
+\bottomrule
+\end{tabular}
+\begin{flushleft}\scriptsize
+$^\ddagger$ KITTI D1 trend-estimated (end-to-end measurement outstanding).
+\end{flushleft}
+\end{table}

@@ -21,7 +21,6 @@ import core._paths  # noqa: F401
 from depth_anything_v2.dpt import DepthAnythingV2
 from scipy.optimize import least_squares as _scipy_least_squares
 
-from core.adaptive_precision import build_caps_merge_plan
 from core.decoder_adaptive_precision import (
     build_decoder_sensitivity_map,
     get_weight_quantized_depth_head,
@@ -35,7 +34,7 @@ from core.sparse_attention import (
     gas_get_intermediate_layers_merge,
     gas_get_intermediate_layers_twopass,
 )
-from core.token_merge import build_token_merge_groups
+from core.token_merge import build_caps_merge_plan, build_token_merge_groups
 from core.token_reassembly import reassemble_token_features
 
 # ---------------------------------------------------------------------------
@@ -446,6 +445,7 @@ def run_decoder_weight_caps_merged_da2(
     input_size: int = 518,
     merge_layer: int = 0,
     decoder_high_precision_ratio: float = 0.75,
+    high_precision_bits: int | None = None,
     low_precision_bits: int = 4,
     decoder_conf_weight: float = 1.0,
     decoder_texture_weight: float = 0.0,
@@ -456,8 +456,10 @@ def run_decoder_weight_caps_merged_da2(
     Run token-merged DA2 with a weight-aware decoder dual-path prototype.
 
     The encoder stays in merge FP32 mode. Selected decoder stages then run both
-    FP32 kernels and a weight-quantized low-precision kernel, and spatially mix
-    their outputs according to the high-precision mask.
+    high-precision kernels (FP32 by default, or a quantized high-precision
+    branch when ``high_precision_bits`` is set) and a weight-quantized
+    low-precision kernel, then spatially mix their outputs according to the
+    high-precision mask.
     """
     image_tensor, (h, w) = model.image2tensor(image_bgr, input_size)
     patch_h = image_tensor.shape[-2] // 14
@@ -479,6 +481,9 @@ def run_decoder_weight_caps_merged_da2(
         texture_weight=decoder_texture_weight,
         variance_weight=decoder_variance_weight,
     )
+    high_precision_depth_head = None
+    if high_precision_bits is not None and high_precision_bits < 16:
+        high_precision_depth_head = get_weight_quantized_depth_head(model.depth_head, high_precision_bits)
     quantized_depth_head = get_weight_quantized_depth_head(model.depth_head, low_precision_bits)
 
     with torch.no_grad():
@@ -499,6 +504,9 @@ def run_decoder_weight_caps_merged_da2(
             patch_w=patch_w,
             sensitivity_map=sensitivity_map,
             high_precision_ratio=decoder_high_precision_ratio,
+            high_precision_depth_head=high_precision_depth_head,
+            high_precision_bits=high_precision_bits,
+            low_precision_bits=low_precision_bits,
             stage_policy=decoder_stage_policy,
         )
         depth_tensor = F.relu(depth_tensor).squeeze(1)

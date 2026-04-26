@@ -1,0 +1,29 @@
+% SOTA accelerator efficiency comparison (iter 1 revised)
+\begin{table*}[!t]
+\caption{Background hardware-efficiency positioning against stereo / disparity accelerators. \textbf{Mixed power scopes; cross-protocol; treat as positioning, not as a same-baseline comparison.} FPS, latency, and power are reported at each work's native operating point and platform. Power scope differs by row (and is annotated): FPGA rows report \emph{total board} power (FPGA + on-board DRAM); the Jetson row reports \emph{SoC} power; our 28\,nm ASIC rows report \emph{core} power only (SA + SCUs + FusionEngineV2 + L2 + WeightStreamer), consistent with Tab.~\ref{tab:perf}; SGM-original is a CPU/general baseline. Resolution and accuracy protocol also differ across rows. Our three rows separate the v1 sparse-ViT+DPT path (518$\times$518) from the FusionEngineV2 path (384$\times$768). The reader is asked not to draw direct $\times$ speedup or $\div$ power claims across rows of this table; for same-protocol speedup/power comparisons we refer to Table~\ref{tab:perf} and the v1 prior-work letter cited there.}
+\label{tab:sota_hw}
+\centering
+\scriptsize
+\renewcommand{\arraystretch}{1.15}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{|l|l|c|c|c|c|c|c|c|}
+\hline
+\textbf{Method} & \textbf{Platform} & \textbf{Resolution} & \textbf{Params (M)} & \textbf{Wgt (KB)} & \textbf{Lat. (ms)} & \textbf{FPS} & \textbf{Power}$^\dagger$ & \textbf{KITTI D1 (\%)} \\
+\hline
+FP-Stereo C2         & Xilinx ZCU102 FPGA   & 1242$\times$375  & --    & N/A  & 6.2    & 161   & 6.6\,W (board)   & 9.81 \\
+FP-Stereo C4         & Xilinx ZCU102 FPGA   & 1242$\times$375  & --    & N/A  & 6.8    & 147   & 9.8\,W (board)   & 9.49 \\
+StereoVAE            & Jetson TX2 (GPU)     & 1242$\times$375  & --    & N/A  & 32.5   & 32    & $\sim$7.5\,W (SoC) & 5.24 \\
+SGM (Hirschm\"uller) & CPU / FPGA ports     & 1242$\times$375  & 0     & 0    & 33--100 & 10--30 & 5--15\,W (board) & 10--11 \\
+\hline
+\textbf{Ours: B0-h24 W8A8 (v1 pipeline)}     & 28\,nm ASIC, 500\,MHz & 518$\times$518 & 0.735 & 464 (INT8)  & 172.1  & 5.81  & 165\,mW (core)  & \textbf{7.13} \\
+\textbf{Ours: B0-h24 W4A8 (FusionEngineV2)$^\star$} & 28\,nm ASIC, 500\,MHz & 384$\times$768 & 0.735 & \textbf{232 (INT4)} & 22.93 & 43.6 & 145\,mW (core)$^\star$ & 7.13 \\
+\textbf{Ours: B1-h24 W8A8 (FusionEngineV2)}  & 28\,nm ASIC, 500\,MHz & 384$\times$768 & 4.70  & 2880 (INT8) & 25.02  & 40.0  & 172\,mW (core)  & 6.08 \\
+\textbf{Ours: B1-h24 W4A8 (FusionEngineV2)$^\star$} & 28\,nm ASIC, 500\,MHz & 384$\times$768 & 4.70  & \textbf{1440 (INT4)} & 23.46 & \textbf{42.6} & 158\,mW (core)$^\star$ & 6.09 \\
+\textbf{Ours: Heuristic (FusionEngineV2)}    & 28\,nm ASIC, 500\,MHz & 384$\times$768 & 0     & 0    & 21.57  & \textbf{46.4} & 141\,mW (core)  & 15.08 \\
+\hline
+\end{tabular}%
+}
+\vspace{-2pt}
+\par\noindent\footnotesize$^\dagger$FPGA rows report full-board power (FPGA core + on-board DRAM + peripherals). Our 28\,nm ASIC rows report \emph{core} power only (SA+SCUs+FusionEngineV2+L2+WeightStreamer at 0.9\,V, 500\,MHz). Off-chip LPDDR4 DRAM is not included in either set of ASIC numbers; the coresident SGM engine adds $\sim$30\,mW and $\sim$0.30\,mm$^2$ (see Sec.~\ref{sec:die_area}). $^\star$W4A8 rows: latency/power are analytically scaled from the W8A8 row of the same backbone, using the WeightStreamer's 2$\times$ fewer DRAM bytes (halved fetch cycles for weights) and pro-rated MAC energy at INT4$\to$INT8 decompress overhead (B1-h24: $-6.2$\%\, latency, $-8.1$\%\, power). W4A8 KITTI D1 is from the trained QAT checkpoint (Tab.~\ref{tab:sota_acc}) without hardware-side retraining.
+\vspace{-6pt}
+\end{table*}

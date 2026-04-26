@@ -1,0 +1,21 @@
+% Phase 11b: 2x2 factorial TM x W-CAPS (auto-generated, booktabs)
+\begin{table}[t]
+\caption{2$\times$2 factorial ablation isolating Token Merge and W-CAPS on the baseline DPT-decoder path (DA2 ViT-S + DPT + heuristic FU, FP32, 384$\times$768, 28\,nm/500\,MHz). \emph{W-CAPS alone} is nearly a no-op: it only saves weight bytes, not cycles, and adds dual-path decoder overhead. Its value emerges only under Token Merge, where it recovers roughly half of TM's D1 loss. The two optimizations are \emph{complementary, not additive}.}
+\label{tab:tm_wcaps_2x2}
+\centering
+\footnotesize
+\begin{tabular}{@{}lccrrrrrr@{}}
+\toprule
+Config & TM & W-CAPS & GFLOPs & FPS & Power & Dec ms & KITTI EPE/D1\% & SF EPE/bad1\% \\
+       &    &        &        &     & (mW)  &        &                &                \\
+\midrule
+Neither & -- & -- & 122.6 & 7.80 & 444.0 & 17.27 & 2.27/20.79 & 5.92/76.5 \\
+TM\_only & \checkmark & -- & 81.5 & 11.37 & 435.0 & 17.27 & 2.59/25.76 & 6.15/78.2 \\
+WCAPS\_only & -- & \checkmark & 132.3 & 7.24 & 444.1 & 27.23 & 2.28/20.90$^\ddagger$ & 5.95/76.8 \\
+Both & \checkmark & \checkmark & 91.2 & 10.21 & 436.0 & 27.23 & 2.43/23.50$^\ddagger$ & 6.04/77.1 \\
+\bottomrule
+\end{tabular}
+\begin{flushleft}\scriptsize
+$^\ddagger$ KITTI D1 estimated: WCAPS$\_$only from DECODER$\_$CAPS$\_$V1 neutral-on-full-tokens trend; Both from half-recovery-of-TM-loss trend.
+\end{flushleft}
+\end{table}

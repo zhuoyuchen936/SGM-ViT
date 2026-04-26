@@ -1,0 +1,25 @@
+% Table I: Latency, power, area, EDAP, accuracy of 3 configurations.
+\begin{table}[t]
+\caption{Latency, power, area, and accuracy of three configurations
+(28\,nm, 500\,MHz, 384$\times$768). A and A$+$EV are ablation
+baselines; D$_{\mathrm{INT8}}$ is the full PKRN-routed design.$^\dagger$}
+\label{tab:cal1}
+\centering
+\setlength{\tabcolsep}{2pt}
+\scriptsize
+\begin{tabular}{|l|c|c|c|c|c|}
+\hline
+\textbf{Config} & \textbf{Lat.} & \textbf{Pow.} & \textbf{Area} & \textbf{EDAP}$^{\ast}$ & \textbf{KITTI} \\
+                & (ms)          & (mW)          & (mm$^2$)      & (FPS/W/mm$^2$)          & EPE / D1\% \\
+\hline
+A: vanilla DA2 $+$ LS                   & 128.18 & 444.0 & 1.479 & 11.88 & 2.27 / 20.79 \\
+A$+$EV: $+$ EffViT, no PKRN route       & 117.40 & 179.2 & 1.740 & 27.32 & 1.30 / 7.50  \\
+\textbf{D: full PKRN route, INT8}       & \textbf{77.20} & \textbf{174.4} & \textbf{1.835} & \textbf{40.47} & \textbf{1.24 / 7.13} \\
+\hline
+\multicolumn{6}{|l|}{$\Delta$ vs.\ A$+$EV: lat.\ $-34\%$, pow.\ $-3\%$, EDAP $+48\%$.} \\
+\multicolumn{6}{|l|}{$\Delta$ vs.\ A: lat.\ $-40\%$, pow.\ $-61\%$, EPE $-45\%$, EDAP $3.4\times$.} \\
+\hline
+\multicolumn{6}{|p{0.95\columnwidth}|}{$^{\dagger}$All rows use EfficientViT-B0-h24 (matched area-limited); Table~\ref{tab:cal2} is at B1-h24 for accuracy. $^{\ast}$EDAP $=$ FPS$\cdot$mm$^{-2}\cdot$W$^{-1}$. Hardware metrics are from an op-count--calibrated analytical model; RTL synthesis is left to future work.} \\
+\hline
+\end{tabular}
+\end{table}

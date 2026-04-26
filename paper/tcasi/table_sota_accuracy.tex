@@ -1,0 +1,55 @@
+% SOTA accuracy comparison table
+% NOTE: cross-protocol; treat as background positioning ONLY (Sec. sec:sota).
+\begin{table*}[!t]
+\caption{Background positioning against published stereo / hardware baselines. \textbf{This table is not a same-protocol comparison.} Columns combine numbers reported in the original papers (KITTI test server D1, SceneFlow EPE on the standard test split, ETH3D / Middlebury submission-server numbers) with our four-dataset numbers measured under the in-house evaluation protocol of Sec.~\ref{sec:method} (KITTI val of 40 images, SF-driving test of 437, ETH3D eval of 27, Mid train-all of 15). The two protocols are not directly comparable; we therefore restrict the claims drawn from this table to qualitative positioning only (Sec.~\ref{sec:sota}). Same-protocol claims are made only against the heuristic baseline implemented inside the same in-house pipeline (Table~\ref{tab:perf}). KITTI=D1-all (\%), SF=EPE (px), ETH3D=bad1 (\%), Mid=bad2 (\%, half-res unless noted). $^\dagger$ protocol mismatch.}
+\label{tab:sota_acc}
+\centering
+\renewcommand{\arraystretch}{1.15}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{|l|c|c|c|c|c|c|c|l|}
+\hline
+\textbf{Method} & \textbf{Year} & \textbf{Params (M)} & \textbf{KITTI D1} & \textbf{SF EPE} & \textbf{ETH3D bad1} & \textbf{Mid bad2} & \textbf{4-ds?} & \textbf{Note} \\
+\hline
+\multicolumn{9}{|l|}{\textit{Learning-based stereo (reference accuracy)}} \\
+\hline
+PSMNet            & 2018 & 5.22  & 2.32 & 1.09 & N/A  & N/A  & No  & cost-vol. 3D-conv \\
+GwcNet-gc         & 2019 & N/A   & 2.11 & 0.77 & N/A  & N/A  & No  & group-wise corr. \\
+HITNet-XL         & 2021 & 2.07  & 1.98 & 0.36 & 0.80 & 6.46 & Yes & tile hypothesis \\
+RAFT-Stereo       & 2021 & 11.23 & 1.96 & N/A  & 2.44 & 4.74$^\dagger$ & Yes & iterative (full-res Mid) \\
+CREStereo         & 2022 & N/A   & 1.69 & N/A  & 0.98 & 3.71$^\dagger$ & Partial & cascaded rec. \\
+IGEV-Stereo       & 2023 & 12.6  & 1.59 & 0.47 & N/A  & N/A  & No  & geometry-enc. \\
+GMStereo          & 2023 & 4.7   & 1.77 & 0.72 & 1.83 & 2.96 & Yes & unified match. \\
+\hline
+\multicolumn{9}{|l|}{\textit{Lightweight / edge-friendly stereo}} \\
+\hline
+StereoNet         & 2018 & 0.36  & 4.83$^\dagger$ & 1.10 & N/A & N/A & No & $>$1-px err, not D1 \\
+MobileStereoNet-2D & 2022 & 2.23  & 2.54 & 1.14 & N/A & N/A & No & 2D-conv only \\
+MobileStereoNet-3D & 2022 & 1.77  & 1.92 & 0.80 & N/A & N/A & No & 3D-conv variant \\
+\hline
+\multicolumn{9}{|l|}{\textit{Hardware-oriented baselines}} \\
+\hline
+SGM (Hirschm\"uller)   & 2008 & 0 & 10--11 & N/A & N/A & 20.8 & Partial & traditional \\
+FP-Stereo C2      & 2020 & 0 & 9.81 & N/A & N/A & N/A & No & FPGA ZCU102 \\
+FP-Stereo C4      & 2020 & 0 & 9.49 & N/A & N/A & N/A & No & FPGA ZCU102 \\
+StereoVAE         & 2023 & N/A   & 5.24 & N/A & N/A & N/A & No & Jetson TX2 \\
+\hline
+\multicolumn{9}{|l|}{\textit{Ours (EdgeStereoDAv2 / EffViT Fusion)}} \\
+\hline
+\multicolumn{9}{|l|}{\quad heuristic reference (in-house pipeline)} \\
+Ours: SGM-heur.            & 2026 & 0     & 15.08 & 8.02 & 24.27 & 26.07 & Yes & on-chip heuristic FU \\
+\hline
+\multicolumn{9}{|l|}{\quad Pareto study (SF-driving-only training pool, 4.4\,k pairs; Sec.~\ref{sec:pareto})} \\
+Ours: b0\_h24 FP32         & 2026 & 0.735 & 7.16  & 3.32 & 13.88 & 19.64 & Yes & Pareto min-compute \\
+Ours: b0\_h24 W8A8 QAT     & 2026 & 0.735 & 7.13  & 3.35 & \textbf{13.47} & 19.58 & Yes & 464\,KB INT8 conv \\
+Ours: b0\_h24 W4A8 QAT     & 2026 & 0.735 & 7.13  & 3.38 & 14.16 & 20.00 & Yes & \textbf{232\,KB} INT4 conv \\
+Ours: b2\_h48 FP32         & 2026 & 15.20 & 5.96  & 3.17 & 14.32 & \textbf{18.92} & Yes & Pareto max-acc. \\
+\hline
+\multicolumn{9}{|l|}{\quad Final operating point (expanded 17.8\,k-pair pool: driving+monkaa+FT; Sec.~\ref{sec:training_protocol})} \\
+Ours: b1\_h24 FP32 (Ph9.6) & 2026 & 4.70  & \textbf{6.08} & 3.26 & \textbf{13.93} & 20.29 & Yes & default accelerator target \\
+Ours: b1\_h24 W8A8 QAT     & 2026 & 4.70  & \textbf{6.08} & 3.27 & 14.42 & 21.89 & Yes & 2.88\,MB INT8 conv \\
+Ours: b1\_h24 W4A8 QAT     & 2026 & 4.70  & 6.09          & 3.33 & 15.08 & 20.55 & Yes & \textbf{1.44\,MB} INT4 conv \\
+\hline
+\end{tabular}%
+}
+\vspace{-3pt}
+\end{table*}

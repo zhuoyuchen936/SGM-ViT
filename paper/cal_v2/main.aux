@@ -1,0 +1,71 @@
+\relax 
+\citation{yang2024da2}
+\citation{hirschmuller2008sgm}
+\citation{yang2024da2}
+\citation{chang2018psmnet}
+\citation{xu2023igev}
+\citation{zhao2020fpstereo}
+\citation{poggi2016pkrn,facil2019camconvs}
+\citation{you2023vitcod,wang2021spatten}
+\citation{poggi2016pkrn}
+\citation{yang2024da2,cai2023efficientvit}
+\@writefile{toc}{\contentsline {section}{\numberline {I}Introduction}{1}{}\protected@file@percent }
+\newlabel{sec:intro}{{I}{1}{}{section.1}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {II}Background}{1}{}\protected@file@percent }
+\newlabel{sec:bg}{{II}{1}{}{section.2}{}}
+\citation{bolya2023tome}
+\@writefile{toc}{\contentsline {section}{\numberline {III}Confidence-Routed Dataflow}{2}{}\protected@file@percent }
+\newlabel{sec:dataflow}{{III}{2}{}{section.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {III-A}}PKRN as a Shared Control Input}{2}{}\protected@file@percent }
+\newlabel{sec:shared}{{\mbox  {III-A}}{2}{}{subsection.3.1}{}}
+\newlabel{eq:m1}{{1}{2}{}{equation.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {III-B}}Consumer 1: Encoder Token Merge}{2}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {III-C}}Consumer 2: Decoder INT4/INT8 Precision Mask}{2}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {III-D}}Consumer 3: LS Anchor Selection}{2}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {III-E}}Consumer 4: Residual-Fusion Gate}{2}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {III-F}}Why a Single Source Matters}{2}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {IV}Accelerator Architecture}{2}{}\protected@file@percent }
+\newlabel{sec:arch}{{IV}{2}{}{section.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {IV-A}}Unified Compute Fabric}{2}{}\protected@file@percent }
+\newlabel{sec:fabric}{{\mbox  {IV-A}}{2}{}{subsection.4.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {IV-B}}PKRN Routing Unit (PRU)}{2}{}\protected@file@percent }
+\newlabel{sec:pru}{{\mbox  {IV-B}}{2}{}{subsection.4.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {IV-C}}Memory and Weight Streamer}{2}{}\protected@file@percent }
+\newlabel{sec:mem}{{\mbox  {IV-C}}{2}{}{subsection.4.3}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces PKRN fan-out. SGM's left--right check on the cost volume produces a per-pixel confidence score upstream of the accelerator; a single 4\,KB PKRN Routing Unit applies four module-local transforms (threshold$+$pool / binarize / top-$k$ / rescale) and broadcasts to four downstream consumers (token-merge plan, INT4/INT8 precision mask, LS anchor selection, residual-fusion gate), unifying four otherwise independent dataflow decisions on one fabric.}}{3}{}\protected@file@percent }
+\newlabel{fig:fanout}{{1}{3}{}{figure.1}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {I}{\ignorespaces Latency, power, area, and accuracy of three configurations (28\,nm, 500\,MHz, 384$\times $768). A and A$+$EV are ablation baselines; D$_{\mathrm  {INT8}}$ is the full PKRN-routed design.$^\dagger $}}{3}{}\protected@file@percent }
+\newlabel{tab:cal1}{{I}{3}{}{table.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {IV-D}}Execution Order}{3}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {V}Results}{3}{}\protected@file@percent }
+\newlabel{sec:results}{{V}{3}{}{section.5}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {V-A}}Methodology}{3}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {V-B}}Ablation (Table~\ref {tab:cal1})}{3}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {V-C}}Accuracy Robustness (Table~\ref {tab:cal2})}{3}{}\protected@file@percent }
+\bibstyle{IEEEtran}
+\bibcite{hirschmuller2008sgm}{1}
+\bibcite{yang2024da2}{2}
+\bibcite{poggi2016pkrn}{3}
+\bibcite{cai2023efficientvit}{4}
+\bibcite{chang2018psmnet}{5}
+\bibcite{xu2023igev}{6}
+\bibcite{bolya2023tome}{7}
+\bibcite{you2023vitcod}{8}
+\bibcite{wang2021spatten}{9}
+\bibcite{sharma2018bitfusion}{10}
+\bibcite{park2019olaccel}{11}
+\bibcite{zhao2020fpstereo}{12}
+\bibcite{menze2015kitti}{13}
+\bibcite{mayer2016sceneflow}{14}
+\bibcite{schops2017eth3d}{15}
+\bibcite{ranftl2021dpt}{16}
+\bibcite{facil2019camconvs}{17}
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces Unified accelerator block diagram. A 5-stage SGM\,$\to $\,CRM\,$\to $\,GSU$+$DPC\,$\to $\,ADCU\,$\to $\,FusionEngine pipeline runs on one 32$\times $32 systolic array and one 16$\times $3$\times $3 depthwise ring, backed by a shared 512\,KB L2 SRAM. A dedicated PKRN Routing Unit reads the PKRN byproduct from the SGM engine, applies four module-local transforms, and fans the results out to all four downstream consumers (red wires). Red-bordered modules are new in this work.}}{4}{}\protected@file@percent }
+\newlabel{fig:arch}{{2}{4}{}{figure.2}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {II}{\ignorespaces Four-dataset accuracy of the learned fusion on the in-house evaluation protocol, backbone EfficientViT-B1-h24. W4A8 retains accuracy within 0.3\,\% of FP32 on KITTI.}}{4}{}\protected@file@percent }
+\newlabel{tab:cal2}{{II}{4}{}{table.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {V-D}}Limitation}{4}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {VI}Conclusion}{4}{}\protected@file@percent }
+\newlabel{sec:conclusion}{{VI}{4}{}{section.6}{}}
+\@writefile{toc}{\contentsline {section}{References}{4}{}\protected@file@percent }
+\gdef \@abspage@last{4}

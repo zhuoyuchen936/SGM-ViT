@@ -154,3 +154,7 @@ work/
 *~
 .DS_Store
 Thumbs.db
+
+# Third-party reference clones (set up locally per third_party/SETUP.md)
+third_party/
+!third_party/SETUP.md

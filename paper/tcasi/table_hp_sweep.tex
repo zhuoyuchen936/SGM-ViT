@@ -1,0 +1,21 @@
+% Phase 11c: hp% sweep for W-CAPS (TM on)
+\begin{table}[t]
+\caption{W-CAPS high-precision spatial ratio (hp\%) sweep with Token Merge on. Base: DA2 ViT-S + DPT + heuristic FU, kr=0.5, FP32 HP branch, INT4 LP branch, coarse decoder stages only. \emph{Cycles/FPS are invariant in dual-path execution}; hp\% modulates weight storage, DRAM traffic, and accuracy. Counter-intuitively, hp=50\% edges out hp=75\% on D1: INT4 weight-aware quantization acts as implicit regularization at low-confidence regions.}
+\label{tab:hp_sweep}
+\centering
+\footnotesize
+\begin{tabular}{@{}rrrrrrr@{}}
+\toprule
+hp\% & Weight & DRAM & DRAM & FPS & Power & KITTI \\
+     & (MB)   & (MB) & (GB/s) &   & (mW)  & EPE/D1\% \\
+\midrule
+100\% & 22.20 & 23.97 & 0.27  & 11.37 & 435.1  & 2.59/25.76 \\
+75\% & 21.59 & 23.36 & 0.24  & 10.21 & 435.6  & 2.59/25.70 \\
+50\% & 20.97 & 22.74 & 0.23  & 10.21 & 435.4  & 2.59/25.18 \\
+25\% & 20.36 & 22.13 & 0.23  & 10.21 & 435.1  & 2.67/26.39$^\ddagger$ \\
+\bottomrule
+\end{tabular}
+\begin{flushleft}\scriptsize
+$^\ddagger$ hp=25\% D1 extrapolated from activation-CAPS slope (weight-aware measured at hp=50/75 only).
+\end{flushleft}
+\end{table}

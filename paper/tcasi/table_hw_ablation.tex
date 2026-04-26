@@ -1,0 +1,23 @@
+% Phase 11 Hardware Ablation Table (auto-generated)
+% Place in paper/tcasi/main.tex via \input{table_hw_ablation}
+\begin{table*}[t]
+\caption{Phase-11 hardware ablation of EdgeStereoDAv2 (28\,nm, 500\,MHz, input 384$\times$768). Each row adds one optimization over the row above (cumulative A$\to$D), with two minus-one rows (D$-$TM, A$+$EV) exposing each optimization's independent contribution. GPU baseline is a discrete RTX TITAN running the Row-A workload. $\dagger$ W-CAPS is structurally absent when EffViT replaces the DPT decoder; the D$-$TM and A$+$EV rows therefore differ only in the presence of the DPC block (area column).}
+\label{tab:hw_ablation}
+\centering
+\footnotesize
+\begin{tabular}{@{}llrrrrrrrrr@{}}
+\toprule
+\# & Configuration & GFLOPs & FPS & Power & Energy & fps/W & Area & KITTI & SF \\
+   &               &        &     & (mW)  & (mJ/fr)&       & (mm$^2$) & EPE/D1\% & EPE/bad1\% \\
+\midrule
+GPU\_ref & GPU: RTX TITAN (ref) & 122.6 & 5.70 & 232\,W & 40.70 & 0.025 & -- & 2.27/20.79 & 5.92/76.5 \\
+A & A: Vanilla DA2 + LS-align & 122.6 & 7.80 & 444.0 & 56.91 & 17.570 & 1.479 & 2.27/20.79 & 5.92/76.5 \\
+B & B: + TokenMerge (kr=0.5) & 81.5 & 11.37 & 435.0 & 38.27 & 26.130 & 1.544 & 2.59/25.76 & 6.15/78.2 \\
+C & C: + W-CAPS (hp=75\%) & 91.2 & 10.21 & 436.0 & 42.70 & 23.420 & 1.574 & 2.43/23.50 & 6.04/77.1 \\
+D\_FP32 & D: + EffViT-B0\_h24 (FP32) & 68.6 & 12.95 & 421.8 & 32.56 & 30.710 & 1.835 & 1.26/7.16 & 3.32/50.0 \\
+D\_INT8 & D+INT8 QAT & 68.6 & 12.95 & 174.4 & 13.47 & 74.260 & 1.835 & 1.24/7.13 & 3.35/51.1 \\
+D-TM$\dagger$ & D - TokenMerge (minus-one) & 109.8 & 8.52 & 179.2 & 21.03 & 47.540 & 1.770 & 1.29/7.45 & 3.30/49.8 \\
+A+EV$\dagger$ & A + EffViT fusion (skip TM/CAPS) & 109.8 & 8.52 & 179.2 & 21.03 & 47.540 & 1.740 & 1.30/7.50 & 3.35/50.2 \\
+\bottomrule
+\end{tabular}
+\end{table*}

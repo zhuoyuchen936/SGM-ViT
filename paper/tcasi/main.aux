@@ -1,0 +1,204 @@
+\relax 
+\citation{hirschmuller2008sgm}
+\citation{zhao2020fpstereo}
+\citation{yang2024da2}
+\citation{facil2019camconvs,wang2019pseudolidar,poggi2016pkrn}
+\citation{you2023vitcod,wang2021spatten}
+\citation{poggi2016pkrn}
+\citation{menze2015kitti}
+\@writefile{toc}{\contentsline {section}{\numberline {I}Introduction}{1}{}\protected@file@percent }
+\citation{sharma2018bitfusion,park2019olaccel}
+\citation{cai2023efficientvit}
+\citation{poggi2016pkrn}
+\citation{dosovitskiy2021vit}
+\citation{ranftl2021dpt}
+\@writefile{toc}{\contentsline {section}{\numberline {II}Background and Motivation}{2}{}\protected@file@percent }
+\newlabel{sec:bg}{{II}{2}{}{section.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {II-A}}SGM and DA2 are Complementary}{2}{}\protected@file@percent }
+\newlabel{sec:complementarity}{{\mbox  {II-A}}{2}{}{subsection.2.1}{}}
+\citation{ours2024cal}
+\citation{cai2023efficientvit}
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces EdgeStereoDAv2 top-level architecture. A single PKRN confidence map (dashed red fan-out) produced once by the coresident SGM engine drives four downstream units (CRM, GSU+DPC, ADCU, FusionEngineV2). Memory subsystem (DRAM, WeightStreamer, L2 SRAM, Strip Buffer, Unified SA) is shown below. Red-bordered modules are new additions in this work (FusionEngineV2 and WeightStreamer); see Eq.~\ref {eq:order} for the formal execution order.}}{3}{}\protected@file@percent }
+\newlabel{fig:arch}{{1}{3}{}{figure.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {II-B}}From Heuristic to Learned Fusion}{3}{}\protected@file@percent }
+\newlabel{sec:bg_learned}{{\mbox  {II-B}}{3}{}{subsection.2.2}{}}
+\newlabel{eq:heuristic}{{1}{3}{}{equation.1}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {I}{\ignorespaces SGM Confidence Complementarity on 40 KITTI Validation Images (Tuned SGM, $P_2{=}3.0$).}}{3}{}\protected@file@percent }
+\newlabel{tab:complementarity}{{I}{3}{}{table.1}{}}
+\citation{you2023vitcod,wang2021spatten}
+\citation{poggi2016pkrn}
+\citation{facil2019camconvs,wang2019pseudolidar,poggi2016pkrn}
+\citation{you2023vitcod,wang2021spatten}
+\citation{sharma2018bitfusion,park2019olaccel}
+\citation{facil2019camconvs,wang2019pseudolidar,poggi2016pkrn}
+\citation{you2023vitcod,wang2021spatten}
+\citation{sharma2018bitfusion,park2019olaccel}
+\citation{lin2017fpn}
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces Algorithm$\leftrightarrow $DSE$\leftrightarrow $Hardware co-design flow. Pareto variants and INT8 QAT feed back into the operator set executed by FusionEngineV2; accelerator cycle/area/power feeds back into algorithmic variant selection.}}{4}{}\protected@file@percent }
+\newlabel{fig:design_flow}{{2}{4}{}{figure.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {II-C}}Co-design Challenges}{4}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {II-D}}Confidence as a Unified Control Signal}{4}{}\protected@file@percent }
+\newlabel{sec:controlsignal}{{\mbox  {II-D}}{4}{}{subsection.2.4}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {II}{\ignorespaces Position of this work across four design axes. Prior work occupies disjoint slices; we unify all four under a single external confidence provenance.}}{4}{}\protected@file@percent }
+\newlabel{tab:position}{{II}{4}{}{table.2}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {III}Learned Fusion: EffViT-Depth as a Plugged-in Backbone}{4}{}\protected@file@percent }
+\newlabel{sec:effvit}{{III}{4}{}{section.3}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces PKRN confidence distribution on KITTI, SceneFlow, ETH3D, and Middlebury (10 randomly sampled images per dataset, 25/50/75 percentile markers). The $>$0.5 tail is dataset-dependent but always substantial, anchoring an SGM backbone.}}{5}{}\protected@file@percent }
+\newlabel{fig:conf_dist}{{3}{5}{}{figure.3}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {4}{\ignorespaces Single-provenance dispatch. One PKRN confidence stream is emitted once by the SGM engine and routed through four stage-local transforms (threshold$+$pool / binarize$+$dilate / top-$k$ / rescale) to the four confidence-consumption points in the datapath. No stage runs its own confidence-generation circuit; local transforms are small ALUs operating on the shared provenance.}}{5}{}\protected@file@percent }
+\newlabel{fig:conf_routing}{{4}{5}{}{figure.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {III-A}}Architecture}{5}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {III-B}}Training Protocol}{5}{}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {5}{\ignorespaces Six-variant Pareto plot on SceneFlow-driving test split. B1-h24 (4.70\,M, 9.85\,GFLOPs) attains EPE=3.17 at 1.6$\times $ the cost of B0-h24 but is the operating point used by the accelerator; all six variants strictly dominate the heuristic fusion baseline on all four benchmarks.}}{5}{}\protected@file@percent }
+\newlabel{fig:pareto}{{5}{5}{}{figure.5}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {III-C}}Pareto Study}{5}{}\protected@file@percent }
+\newlabel{sec:pareto}{{\mbox  {III-C}}{5}{}{subsection.3.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {III-D}}INT8 QAT with Mixed Precision}{5}{}\protected@file@percent }
+\newlabel{sec:qat}{{\mbox  {III-D}}{5}{}{subsection.3.4}{}}
+\citation{you2023vitcod,wang2021spatten}
+\@writefile{lof}{\contentsline {figure}{\numberline {6}{\ignorespaces INT8 QAT vs FP32 delta (two variants $\times $ four datasets). Green bars indicate INT8 improves over FP32; 6/8 metrics improve on both B0-h24 and B1-h24, confirming QAT's regularization effect.}}{6}{}\protected@file@percent }
+\newlabel{fig:qat_delta}{{6}{6}{}{figure.6}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {IV}Accelerator Architecture}{6}{}\protected@file@percent }
+\newlabel{sec:arch}{{IV}{6}{}{section.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {IV-A}}Overall Design and Execution Order}{6}{}\protected@file@percent }
+\newlabel{sec:arch_overview}{{\mbox  {IV-A}}{6}{}{subsection.4.1}{}}
+\newlabel{eq:order}{{2}{6}{}{equation.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {IV-B}}Unified 32$\times $32 Systolic Array}{6}{}\protected@file@percent }
+\newlabel{sec:sa}{{\mbox  {IV-B}}{6}{}{subsection.4.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {IV-C}}Confidence-Driven Special Compute Units}{6}{}\protected@file@percent }
+\newlabel{sec:scu}{{\mbox  {IV-C}}{6}{}{subsection.4.3}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {\mbox  {IV-C}1}CRM --- Confidence Routing Module}{6}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {\mbox  {IV-C}2}GSU --- Gather-Scatter Unit}{6}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {\mbox  {IV-C}3}DPC --- Dual-Precision Controller}{6}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {\mbox  {IV-C}4}ADCU --- Absolute Disparity Calibration Unit}{6}{}\protected@file@percent }
+\citation{facil2019camconvs}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {\mbox  {IV-C}5}FU --- Fusion Unit (legacy)}{7}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {IV-D}}FusionEngineV2}{7}{}\protected@file@percent }
+\newlabel{sec:fusion_engine}{{\mbox  {IV-D}}{7}{}{subsection.4.4}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {\mbox  {IV-D}1}Four Sub-Cores}{7}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {\mbox  {IV-D}2}12-Op ISA}{7}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {IV-E}}WeightStreamer and DRAM Streaming}{7}{}\protected@file@percent }
+\newlabel{sec:streamer}{{\mbox  {IV-E}}{7}{}{subsection.4.5}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {III}{\ignorespaces FusionEngineV2 12-Op ISA. The \emph  {conf} column marks each opcode's dependency on the external PKRN confidence provenance (Sec.~\ref {sec:controlsignal}): \textbf  {R} reads the provenance directly as a dispatch-time control input; \textbf  {G} is implicitly gated by a W-CAPS mask (DPC-set); \textbf  {---} is conf-independent (pure compute). Latency is single-op when strip buffer is warm; multi-op kernels are pipelined at one issue per cycle.}}{7}{}\protected@file@percent }
+\newlabel{tab:isa}{{III}{7}{}{table.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {IV-F}}W-CAPS: Spatial Adaptive Precision from External Confidence}{7}{}\protected@file@percent }
+\newlabel{sec:wcaps}{{\mbox  {IV-F}}{7}{}{subsection.4.6}{}}
+\citation{sharma2018bitfusion,park2019olaccel}
+\@writefile{lof}{\contentsline {figure}{\numberline {7}{\ignorespaces FusionEngineV2 dataflow. Four sub-cores (Elementwise 32 lanes, Conv1$\times $1 32 lanes, Depthwise 16$\times $3$\times $3 grid, Upsampler 32\,px/cycle) consume a shared 16\,KB strip buffer and are dispatched by a 12-op ISA. The depthwise grid processes 16 output channels in parallel, each with a 3$\times $3 MAC tree (144 MACs total at 500\,MHz = 72\,GOPS dedicated to 3$\times $3 conv). Heuristic execution uses a single \texttt  {EDGE\_AWARE\_BLEND} op, and EffViT-B1-h24 INT8 is compiled to 86 FusionEngine ops per frame (combined with SA-side ops the full DAG contains $\sim $2\,100 events; see Sec.~\ref {sec:method}).}}{8}{}\protected@file@percent }
+\newlabel{fig:fusion_engine_dataflow}{{7}{8}{}{figure.7}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {8}{\ignorespaces WeightStreamer: 64\,KB double-buffer, AXI4 master at 3\,GB/s (LPDDR4-2400 single channel @ 75\% sustained). A stage-sequential prefetch schedule (stage1 10\,KB, stage2 40\,KB, stage3 600\,KB, stage4 3.3\,MB, FPN 50\,KB) overlaps with FusionEngineV2 compute: 0.7\,M DRAM cycles $\ll $ 12.5\,M compute cycles, making WeightStreamer a \emph  {bandwidth-free} addition.}}{8}{}\protected@file@percent }
+\newlabel{fig:weight_streamer}{{8}{8}{}{figure.8}{}}
+\citation{zhao2020fpstereo}
+\@writefile{lot}{\contentsline {table}{\numberline {IV}{\ignorespaces W-CAPS high-precision spatial ratio (hp\%) sweep with Token Merge on. Base: DA2 ViT-S + DPT + heuristic FU, kr=0.5, FP32 HP branch, INT4 LP branch, coarse decoder stages only. \emph  {Cycles/FPS are invariant in dual-path execution}; hp\% modulates weight storage, DRAM traffic, and accuracy. Counter-intuitively, hp=50\% edges out hp=75\% on D1: INT4 weight-aware quantization acts as implicit regularization at low-confidence regions.}}{9}{}\protected@file@percent }
+\newlabel{tab:hp_sweep}{{IV}{9}{}{table.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {IV-G}}Die Area Breakdown}{9}{}\protected@file@percent }
+\newlabel{sec:die_area}{{\mbox  {IV-G}}{9}{}{subsection.4.7}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {V}Dataflow and ISA}{9}{}\protected@file@percent }
+\newlabel{sec:dataflow}{{V}{9}{}{section.5}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {V-A}}Two Execution Modes}{9}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {V-B}}LiteMLA Mixed-Precision Path}{9}{}\protected@file@percent }
+\newlabel{sec:litemla_precision}{{\mbox  {V-B}}{9}{}{subsection.5.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {V-C}}Weight Layout}{9}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {V-D}}Op Count per Frame}{10}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {VI}Experimental Methodology}{10}{}\protected@file@percent }
+\newlabel{sec:method}{{VI}{10}{}{section.6}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {VI-A}}Performance Modeling Methodology}{10}{}\protected@file@percent }
+\newlabel{sec:method_perfmodel}{{\mbox  {VI-A}}{10}{}{subsection.6.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {VI-B}}QAT Training Setup}{10}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {VI-C}}Datasets and Evaluation Protocol}{10}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {VII}Results}{10}{}\protected@file@percent }
+\newlabel{sec:results}{{VII}{10}{}{section.7}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {VII-A}}Accuracy on Four Datasets}{10}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {VII-B}}Comparison with SOTA}{10}{}\protected@file@percent }
+\newlabel{sec:sota}{{\mbox  {VII-B}}{10}{}{subsection.7.2}{}}
+\citation{ours2024cal}
+\@writefile{lof}{\contentsline {figure}{\numberline {9}{\ignorespaces Qualitative comparison across four datasets (KITTI, SceneFlow, ETH3D, Middlebury) and five methods (raw SGM, DA2 mono, heuristic fusion, EffViT-B1-h24 FP32, EffViT-B1-h24 INT8 QAT). EffViT fusion preserves SGM's sharp edges on textured regions while recovering DA2's coverage in occluders, reflections, and textureless walls. INT8 QAT is visually indistinguishable from FP32.}}{11}{}\protected@file@percent }
+\newlabel{fig:qualitative_demo}{{9}{11}{}{figure.9}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {V}{\ignorespaces EdgeStereoDAv2 v2 main-path performance (this paper). Heuristic and B1-h24 INT8 both run on the FusionEngineV2 path at 384$\times $768. Accuracy on four benchmarks under the in-house evaluation protocol of Sec.~\ref {sec:method}. Numbers from the Tier-2 critical-path scheduler (Sec.~\ref {sec:method_perfmodel}). The B0-h24 carry-over from the v1 pipeline is reported separately in Table~\ref {tab:perf_v1carry} to avoid conflating resolution and pipeline changes.}}{11}{}\protected@file@percent }
+\newlabel{tab:perf}{{V}{11}{}{table.5}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {VI}{\ignorespaces B0-h24 carry-over baseline from the v1 sparse-ViT$+$DPT pipeline at 518$\times $518 (\emph  {not} on the v2 main path of Table~\ref {tab:perf}). Reported here separately so that B0 vs.\ B1 comparisons are not conflated with resolution and pipeline changes simultaneously. Accuracy is on the same in-house protocol (Sec.~\ref {sec:method}).}}{11}{}\protected@file@percent }
+\newlabel{tab:perf_v1carry}{{VI}{11}{}{table.6}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {VII-C}}Hardware Efficiency}{11}{}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {VII}{\ignorespaces Background positioning against published stereo / hardware baselines. \textbf  {This table is not a same-protocol comparison.} Columns combine numbers reported in the original papers (KITTI test server D1, SceneFlow EPE on the standard test split, ETH3D / Middlebury submission-server numbers) with our four-dataset numbers measured under the in-house evaluation protocol of Sec.~\ref {sec:method} (KITTI val of 40 images, SF-driving test of 437, ETH3D eval of 27, Mid train-all of 15). The two protocols are not directly comparable; we therefore restrict the claims drawn from this table to qualitative positioning only (Sec.~\ref {sec:sota}). Same-protocol claims are made only against the heuristic baseline implemented inside the same in-house pipeline (Table~\ref {tab:perf}). KITTI=D1-all (\%), SF=EPE (px), ETH3D=bad1 (\%), Mid=bad2 (\%, half-res unless noted). $^\dagger $ protocol mismatch.}}{12}{}\protected@file@percent }
+\newlabel{tab:sota_acc}{{VII}{12}{}{table.7}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {VIII}{\ignorespaces Background hardware-efficiency positioning against stereo / disparity accelerators. \textbf  {Mixed power scopes; cross-protocol; treat as positioning, not as a same-baseline comparison.} FPS, latency, and power are reported at each work's native operating point and platform. Power scope differs by row (and is annotated): FPGA rows report \emph  {total board} power (FPGA + on-board DRAM); the Jetson row reports \emph  {SoC} power; our 28\,nm ASIC rows report \emph  {core} power only (SA + SCUs + FusionEngineV2 + L2 + WeightStreamer), consistent with Tab.~\ref {tab:perf}; SGM-original is a CPU/general baseline. Resolution and accuracy protocol also differ across rows. Our three rows separate the v1 sparse-ViT+DPT path (518$\times $518) from the FusionEngineV2 path (384$\times $768). The reader is asked not to draw direct $\times $ speedup or $\div $ power claims across rows of this table; for same-protocol speedup/power comparisons we refer to Table~\ref {tab:perf} and the v1 prior-work letter cited there.}}{12}{}\protected@file@percent }
+\newlabel{tab:sota_hw}{{VIII}{12}{}{table.8}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {VII-D}}Ablation}{12}{}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {10}{\ignorespaces Params (M) vs KITTI D1 scatter for our six EffViT-Depth variants against published stereo methods. Our B0-h24 INT8 at 0.735\,M occupies an otherwise empty corner of the Pareto frontier; B1-h24 INT8 matches MobileStereoNet-3D (1.92\% D1 on test / 6.43\% on our val split) at similar parameter counts but with a fully quantized hardware deployment.}}{13}{}\protected@file@percent }
+\newlabel{fig:sota_scatter}{{10}{13}{}{figure.10}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {11}{\ignorespaces Roofline at 28\,nm / 500\,MHz. Peak 1024\,GOPS (32$\times $32 MACs $\times $ 2 ops $\times $ 500\,MHz) and peak 72\,GOPS dedicated 3$\times $3 DW throughput on FusionEngineV2. The EffViT-B1 INT8 operating point sits at 136\,GOPS sustained on 24.6\,GB/s effective bandwidth (L2 + WS), 35\% of the compute bound.}}{13}{}\protected@file@percent }
+\newlabel{fig:roofline}{{11}{13}{}{figure.11}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {12}{\ignorespaces FPS vs input resolution for heuristic and EffViT-B1-h24 INT8 modes. At 384$\times $768, 40\,FPS clears the 30\,FPS real-time threshold. At 256$\times $512, EffViT mode approaches 90\,FPS.}}{13}{}\protected@file@percent }
+\newlabel{fig:fps_resolution}{{12}{13}{}{figure.12}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {VII-E}}Ablation A1 --- Confidence-Signal Unification}{13}{}\protected@file@percent }
+\newlabel{sec:a1_ablation}{{\mbox  {VII-E}}{13}{}{subsection.7.5}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {13}{\ignorespaces Per-frame energy (mJ) breakdown by unit. WeightStreamer dominates dynamic energy in EffViT mode, with a 31\,mW average power (0.78\,mJ/frame at 40\,FPS) but is fully hidden in latency; FusionEngineV2 active power is only 1.80\,mW.}}{14}{}\protected@file@percent }
+\newlabel{fig:energy}{{13}{14}{}{figure.13}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {14}{\ignorespaces Die area breakdown. Five SCUs occupy 7.9\%, FusionEngineV2 adds 5.1\% of the 1.87\,mm$^2$ die; L2 SRAM remains the largest single consumer at 28.7\%.}}{14}{}\protected@file@percent }
+\newlabel{fig:area}{{14}{14}{}{figure.14}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {15}{\ignorespaces Ablation. Removing FusionEngineV2 (falling back to FU) prevents EffViT execution; removing WeightStreamer forces all 4.4\,MB of weights into L2 and blows the area budget; disabling INT8 QAT leaves FP32 weights that require 4$\times $ more DRAM traffic and miss the 30\,FPS target by 8\,FPS.}}{14}{}\protected@file@percent }
+\newlabel{fig:ablation}{{15}{14}{}{figure.15}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {IX}{\ignorespaces Ablation A1 --- confidence-signal unification. All variants use the same EffViT-B1-h24 FP32 checkpoint; only the confidence signal provided to the 5 SCUs differs. The last column is the estimated control-logic area (\S  \ref {sec:scu}) relative to V0's 0.148\,mm$^2$ 5-SCU budget (\S  \ref {sec:die_area}). \textbf  {Note:} the control-area numbers in the last column are \emph  {modeled estimates} from \texttt  {scripts/ablation\_a1\_area\_accounting.py}, which uses engineer-derived multiplier coefficients (e.g., 2.5$\times $ for an independent signal generator over a local transform, 3.5$\times $ FSM cost for $n{=}4$ independent signals) and is \emph  {not} a synthesis flow; see Sec.~\ref {sec:limitations} L2.}}{14}{}\protected@file@percent }
+\newlabel{tab:a1}{{IX}{14}{}{table.9}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {16}{\ignorespaces Per-opcode cycle share on the EffViT-B1-h24 INT8 frame (384$\times $768, learned-fusion path). \texttt  {CONV\_3X3\_DW} and \texttt  {CONV\_1X1} together account for 82\% of FusionEngine cycles, motivating the 16$\times $3$\times $3 DepthwiseCore and 32-lane Conv1x1Core sizing in \S  \ref {sec:fusion_engine}.}}{15}{}\protected@file@percent }
+\newlabel{fig:isa_coverage}{{16}{15}{}{figure.16}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {VII-F}}Ablation A3 --- ISA Coverage and Minimality}{15}{}\protected@file@percent }
+\newlabel{sec:a3_ablation}{{\mbox  {VII-F}}{15}{}{subsection.7.6}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {X}{\ignorespaces Ablation A3 --- leave-one-out minimality of the 12-op ISA. For each opcode, we report the minimal equivalent sequence using only the remaining 11 ops, the resulting cycle expansion, weight-traffic expansion, and cycle-share coverage on the EffViT-B1-h24 INT8 frame workload. An opcode \emph  {passes} the minimality criterion if it costs $\geq 2{\times }$ cycles when removed \emph  {or} carries $\geq 3\%$ cycle coverage. 11/12 opcodes pass. \textbf  {Note:} the cycle-multiplier and weight-traffic-multiplier columns are \emph  {design-time analytical estimates} from per-engine cost tables and engineer-derived fallback sequences (\texttt  {scripts/ablation\_a3\_isa\_coverage.py}); they are \emph  {not} measured cycles from a recompiled / re-traced workload. See Sec.~\ref {sec:limitations} L3 for the gap and Sec.~\ref {sec:future} F4 for the planned compiler-based replacement.}}{15}{}\protected@file@percent }
+\newlabel{tab:a3}{{X}{15}{}{table.10}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {XI}{\ignorespaces 2$\times $2 factorial ablation isolating Token Merge and W-CAPS on the baseline DPT-decoder path (DA2 ViT-S + DPT + heuristic FU, FP32, 384$\times $768, 28\,nm/500\,MHz). \emph  {W-CAPS alone} is nearly a no-op: it only saves weight bytes, not cycles, and adds dual-path decoder overhead. Its value emerges only under Token Merge, where it recovers roughly half of TM's D1 loss. The two optimizations are \emph  {complementary, not additive}.}}{15}{}\protected@file@percent }
+\newlabel{tab:tm_wcaps_2x2}{{XI}{15}{}{table.11}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {VII-G}}Ablation A2 --- Orthogonality of Token Merge and W-CAPS}{15}{}\protected@file@percent }
+\newlabel{sec:a2_orthogonality}{{\mbox  {VII-G}}{15}{}{subsection.7.7}{}}
+\citation{hirschmuller2008sgm}
+\citation{poggi2016pkrn}
+\citation{cai2023efficientvit}
+\citation{facil2019camconvs,wang2019pseudolidar,poggi2016pkrn}
+\citation{you2023vitcod,wang2021spatten}
+\citation{sharma2018bitfusion,park2019olaccel}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {VII-H}}Cumulative Hardware Ablation}{16}{}\protected@file@percent }
+\newlabel{sec:hw_cumulative}{{\mbox  {VII-H}}{16}{}{subsection.7.8}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {VIII}Discussion}{16}{}\protected@file@percent }
+\newlabel{sec:discussion}{{VIII}{16}{}{section.8}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {VIII-A}}Why This Is Not Just Integration}{16}{}\protected@file@percent }
+\newlabel{sec:not_integration}{{\mbox  {VIII-A}}{16}{}{subsection.8.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {VIII-B}}Amdahl Bottleneck Analysis, Encoder Ceiling vs.\ Decoder Rebalance}{16}{}\protected@file@percent }
+\newlabel{sec:amdahl}{{\mbox  {VIII-B}}{16}{}{subsection.8.2}{}}
+\citation{ours2024cal}
+\@writefile{lot}{\contentsline {table}{\numberline {XII}{\ignorespaces Phase-11 hardware ablation of EdgeStereoDAv2 (28\,nm, 500\,MHz, input 384$\times $768). Each row adds one optimization over the row above (cumulative A$\to $D), with two minus-one rows (D$-$TM, A$+$EV) exposing each optimization's independent contribution. GPU baseline is a discrete RTX TITAN running the Row-A workload. $\dagger $ W-CAPS is structurally absent when EffViT replaces the DPT decoder; the D$-$TM and A$+$EV rows therefore differ only in the presence of the DPC block (area column).}}{17}{}\protected@file@percent }
+\newlabel{tab:hw_ablation}{{XII}{17}{}{table.12}{}}
+\newlabel{eq:amdahl}{{3}{17}{}{equation.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {VIII-C}}Three-in-One Value Proposition}{17}{}\protected@file@percent }
+\newlabel{sec:value}{{\mbox  {VIII-C}}{17}{}{subsection.8.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {VIII-D}}Methodology and Evaluation Limitations}{17}{}\protected@file@percent }
+\newlabel{sec:limitations}{{\mbox  {VIII-D}}{17}{}{subsection.8.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {VIII-E}}Future Work}{18}{}\protected@file@percent }
+\newlabel{sec:future}{{\mbox  {VIII-E}}{18}{}{subsection.8.5}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {IX}Conclusion}{18}{}\protected@file@percent }
+\newlabel{sec:conclusion}{{IX}{18}{}{section.9}{}}
+\bibstyle{IEEEtran}
+\bibcite{hirschmuller2008sgm}{1}
+\bibcite{yang2024da2}{2}
+\bibcite{bolya2023tome}{3}
+\bibcite{dao2022flashattn}{4}
+\bibcite{you2023vitcod}{5}
+\bibcite{wang2021spatten}{6}
+\bibcite{cai2023efficientvit}{7}
+\bibcite{menze2015kitti}{8}
+\bibcite{mayer2016sceneflow}{9}
+\bibcite{schops2017eth3d}{10}
+\bibcite{scharstein2014middlebury}{11}
+\bibcite{ranftl2021dpt}{12}
+\bibcite{poggi2016pkrn}{13}
+\bibcite{dosovitskiy2021vit}{14}
+\bibcite{ham2020a3}{15}
+\bibcite{qin2023fact}{16}
+\bibcite{zhao2020fpstereo}{17}
+\bibcite{lin2017fpn}{18}
+\bibcite{ours2024cal}{19}
+\bibcite{facil2019camconvs}{20}
+\bibcite{wang2019pseudolidar}{21}
+\bibcite{sharma2018bitfusion}{22}
+\bibcite{park2019olaccel}{23}
+\@writefile{toc}{\contentsline {section}{References}{19}{}\protected@file@percent }
+\gdef \@abspage@last{19}

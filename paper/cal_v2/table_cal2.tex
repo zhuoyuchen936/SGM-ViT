@@ -1,0 +1,20 @@
+% Table II: cross-dataset accuracy at FP32 / W8A8 / W4A8 vs heuristic baseline.
+\begin{table}[t]
+\caption{Four-dataset accuracy of the learned fusion on the in-house evaluation
+         protocol, backbone EfficientViT-B1-h24. W4A8 retains accuracy within
+         0.3\,\% of FP32 on KITTI.}
+\label{tab:cal2}
+\centering
+\setlength{\tabcolsep}{2pt}
+\scriptsize
+\begin{tabular}{|l|l|c|c|c|c|}
+\hline
+\textbf{Dataset} & \textbf{Metric} & \textbf{heur} & \textbf{FP32} & \textbf{W8A8} & \textbf{W4A8} \\
+\hline
+KITTI       & EPE / D1\%     & 1.87 / 15.08 & \textbf{1.14 / 6.08}  & 1.13 / 6.08 & 1.13 / 6.09 \\
+SceneFlow   & EPE / bad1\%   & 8.02 / 61.24 & \textbf{3.26 / 48.79} & 3.27 / 47.52 & 3.32 / 49.49 \\
+ETH3D       & EPE / bad1\%   & 0.89 / 24.27 & \textbf{0.63 / 13.93} & 0.64 / 14.42 & 0.64 / 15.08 \\
+Middlebury  & EPE / bad2\%   & 2.25 / 26.07 & \textbf{1.74 / 20.29} & 1.84 / 21.89 & 1.75 / 20.55 \\
+\hline
+\end{tabular}
+\end{table}
