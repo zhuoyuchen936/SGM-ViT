@@ -1,7 +1,7 @@
 # memory-bank — 项目记忆库索引
 
 **项目**：SGM-ViT 硬件加速器协同设计（CAL 2024 letter [偶 prelim] → **TCAS-I 2026 full journal paper**, 现 Phase 10.11 收尾）  
-**最后更新**：2026-04-22
+**最后更新**：2026-04-27（追加 phase9_regcal_lessons.md 踩坑记录）
 
 本目录是项目的长期记忆，面向新人 onboarding 和跨会话一致性维护。所有文件**持续追加不删历史**；每次重大迭代结束要更新对应进度文件。
 
@@ -19,6 +19,7 @@
 | `hardware-architecture.md` | **硬件侧代码地图** + API 速查 | 想找某个 HW 模块 |
 | `hardware-design-document.md` | **硬件侧正式 spec**（Specs A-D + 11 模块 + 事件驱动仿真器） | 想懂 HW 设计 |
 | `hardware-progress.md` | **硬件侧 Step 1-14 进度日志** | 想看 HW 迭代历史 |
+| **`phase9_regcal_lessons.md`** | **Phase 9 RegCal 失败踩坑记录**（已废弃路线，5 iter 完整失败模式 + DO NOT REVISIT 列表） | 任何想做 mono+stereo 融合架构的人，先读此 |
 
 ---
 
